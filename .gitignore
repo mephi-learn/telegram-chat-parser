@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Session files
+*.session
+*.session-journal
+
+# Binaries
+/client
+/server
+bin/client
+bin/parser
+coverage.out
+*.log
+*.pid
+*.json
+
+/.idea

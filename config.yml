@@ -1,0 +1,23 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  shutdown_timeout_seconds: 10
+
+telegram_api:
+  health_check_interval_seconds: 30
+  servers:
+    - api_id: 31763376
+      api_hash: "7c910353fe312ff9a0604812a4e35eae"
+      phone_number: "+13082951338"
+      session_file: "tg.session"
+
+processing:
+  task_timeout_seconds: 30
+  cache_ttl_minutes: 60
+
+enrichment:
+  pool_size: 1
+  client_retry_pause_seconds: 1
+
+logging:
+  level: "debug"
