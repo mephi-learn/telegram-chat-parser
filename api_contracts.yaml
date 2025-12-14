@@ -1,0 +1,178 @@
+openapi: 3.0.0
+info:
+  title: Telegram Chat Parser API
+  version: 1.0.0
+  description: API for processing Telegram chat exports and enriching participant data.
+
+paths:
+  /health:
+    get:
+      summary: Check server health
+      responses:
+        '200':
+          description: Server status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+                  telegram_api_status:
+                    type: string
+                    example: "ok"
+                  telegram_api_error:
+                    type: string
+                    example: ""
+
+  /api/v1/process:
+    post:
+      summary: Start a new processing task
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                    example: "a1b2c3d4-e5f6-7890-1234-567890abcdef"
+
+  /api/v1/process-by-hash:
+    post:
+      summary: Start a new processing task by file hash
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hash:
+                  type: string
+                  example: "sha256-хэш-файла"
+      responses:
+        '202':
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                    example: "a1b2c3d4-e5f6-7890-1234-567890abcdef"
+        '404':
+          description: Hash not found in cache
+
+  /api/v1/tasks/{task_id}:
+    get:
+      summary: Check task status
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                    example: "a1b2c3d4-e5f6-7890-1234-567890abcdef"
+                  status:
+                    type: string
+                    enum: [pending, processing, completed, failed]
+                    example: "completed"
+                  error_message:
+                    type: string
+                    example: ""
+        '404':
+          description: Task not found
+
+  /api/v1/tasks/{task_id}/result:
+    get:
+      summary: Get paginated task result
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Paginated task result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pagination:
+                    type: object
+                    properties:
+                      current_page:
+                        type: integer
+                        example: 1
+                      page_size:
+                        type: integer
+                        example: 50
+                      total_items:
+                        type: integer
+                        example: 245
+                      total_pages:
+                        type: integer
+                        example: 5
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+        '400':
+          description: Task is not completed
+        '404':
+          description: Task not found
+
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 123456
+        name:
+          type: string
+          example: "Full Name"
+        username:
+          type: string
+          example: "username"
+        bio:
+          type: string
+          example: "User bio"

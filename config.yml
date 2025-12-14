@@ -1,0 +1,22 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+telegram_api:
+  api_id: 31763376
+  api_hash: "7c910353fe312ff9a0604812a4e35eae"
+  phone_number: "+13082951338"
+  session_file: "tg.session"
+
+processing:
+  task_timeout_seconds: 30
+  cache_ttl_minutes: 60
+
+rate_limiter:
+  strategy: "always_delay"
+  request_delay_ms: 1000
+  throttled_retries: 5
+  cooldown_duration_seconds: 60
+
+service:
+  pid_file_path: "./telegram-chat-parser-server.pid"
