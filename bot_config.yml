@@ -1,0 +1,5 @@
+bot:
+  token: "8462697481:AAEJSXuTcb2F1Js2sWiK0TVWvxbHL9xX05Q" # Заменить на реальный токен
+  backend_url: "http://localhost:8080" # URL бэкенд-сервера
+  polling_interval_seconds: 5
+  excel_threshold: 50
