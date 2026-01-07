@@ -4,7 +4,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v2"
@@ -27,12 +26,6 @@ type TelegramAPIServer struct {
 
 // TelegramAPI содержит конфигурацию Telegram API
 type TelegramAPI struct {
-	// Для обратной совместимости. Используйте Servers.
-	APIID       int    `json:"api_id,omitempty" yaml:"api_id,omitempty"`
-	APIHash     string `json:"api_hash,omitempty" yaml:"api_hash,omitempty"`
-	PhoneNumber string `json:"phone_number,omitempty" yaml:"phone_number,omitempty"`
-	SessionFile string `json:"session_file,omitempty" yaml:"session_file,omitempty"`
-
 	// Новый формат для нескольких серверов
 	Servers []TelegramAPIServer `json:"servers" yaml:"servers"`
 
@@ -65,41 +58,21 @@ type Config struct {
 	Logging     Logging     `json:"logging" yaml:"logging"`
 }
 
-// GetTelegramServers возвращает список конфигураций серверов Telegram,
-// обеспечивая обратную совместимость со старым форматом.
+// GetTelegramServers возвращает список конфигураций серверов Telegram.
 func (c *Config) GetTelegramServers() []TelegramAPIServer {
-	if len(c.TelegramAPI.Servers) > 0 {
-		return c.TelegramAPI.Servers
-	}
-	// Поддержка старого формата из корневого объекта telegram_api
-	if c.TelegramAPI.APIID != 0 && c.TelegramAPI.APIHash != "" {
-		return []TelegramAPIServer{
-			{
-				APIID:       c.TelegramAPI.APIID,
-				APIHash:     c.TelegramAPI.APIHash,
-				PhoneNumber: c.TelegramAPI.PhoneNumber,
-				SessionFile: c.TelegramAPI.SessionFile,
-			},
-		}
-	}
-	return nil
+	return c.TelegramAPI.Servers
 }
 
 // LoadConfig загружает конфигурацию приложения из переменных окружения, .env файла или config.yml
 func LoadConfig() (*Config, error) {
 	// Загрузка переменных окружения из .env файла, если он существует
-	if err := godotenv.Load(); err != nil {
-		// Если .env файла не существует, это нормально, мы будем полагаться на переменные окружения или config.yml
-	}
+	// Загрузка .env файла игнорируется, если он не найден.
+	_ = godotenv.Load()
 
-	// Попытка загрузки из config.yml сначала
+	// Загрузка конфигурации из YAML-файла является единственным поддерживаемым способом.
 	cfg, err := loadFromYAML("config.yml")
 	if err != nil {
-		// Если загрузка YAML не удалась, используем переменные окружения
-		cfg, err = loadFromEnv()
-		if err != nil {
-			return nil, fmt.Errorf("не удалось загрузить конфигурацию из env: %w", err)
-		}
+		return nil, fmt.Errorf("не удалось загрузить конфигурацию: %w", err)
 	}
 
 	return cfg, nil
@@ -118,59 +91,6 @@ func loadFromYAML(filename string) (*Config, error) {
 	}
 
 	return &cfg, nil
-}
-
-// loadFromEnv загружает конфигурацию из переменных окружения (обратная совместимость)
-func loadFromEnv() (*Config, error) {
-	apiIDStr := getEnv("API_ID", "")
-	apiHash := getEnv("API_HASH", "")
-	phoneNumber := getEnv("PHONE_NUMBER", "")
-	sessionFile := getEnv("SESSION_FILE", "tg.session")
-	host := getEnv("SERVER_HOST", "0.0.0")
-	portStr := getEnv("SERVER_PORT", "8080")
-	taskTimeoutStr := getEnv("TASK_TIMEOUT_SECONDS", "30")
-	cacheTTLStr := getEnv("CACHE_TTL_MINUTES", "60")
-
-	if apiIDStr == "" || apiHash == "" || phoneNumber == "" {
-		return nil, fmt.Errorf("API_ID, API_HASH и PHONE_NUMBER должны быть установлены в переменных окружения")
-	}
-
-	apiID, err := strconv.Atoi(apiIDStr)
-	if err != nil {
-		return nil, fmt.Errorf("недопустимый API_ID: %w", err)
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return nil, fmt.Errorf("недопустимый SERVER_PORT: %w", err)
-	}
-
-	taskTimeout, err := strconv.Atoi(taskTimeoutStr)
-	if err != nil {
-		return nil, fmt.Errorf("недопустимый TASK_TIMEOUT_SECONDS: %w", err)
-	}
-
-	cacheTL, err := strconv.Atoi(cacheTTLStr)
-	if err != nil {
-		return nil, fmt.Errorf("недопустимый CACHE_TTL_MINUTES: %w", err)
-	}
-
-	return &Config{
-		Server: Server{
-			Host: host,
-			Port: port,
-		},
-		TelegramAPI: TelegramAPI{
-			APIID:       apiID,
-			APIHash:     apiHash,
-			PhoneNumber: phoneNumber,
-			SessionFile: sessionFile,
-		},
-		Processing: Processing{
-			TaskTimeoutSeconds: taskTimeout,
-			CacheTTLMinutes:    cacheTL,
-		},
-	}, nil
 }
 
 // Address возвращает адрес сервера в формате "host:port"
