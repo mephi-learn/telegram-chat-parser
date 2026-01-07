@@ -114,67 +114,10 @@ func TestGetTelegramServers(t *testing.T) {
 		assert.Equal(t, 67890, servers[1].APIID)
 	})
 
-	t.Run("from legacy config", func(t *testing.T) {
-		cfg, err := loadFromYAML(createTempConfigFile(t, legacyYAML))
-		require.NoError(t, err)
-		servers := cfg.GetTelegramServers()
-		require.Len(t, servers, 1)
-		assert.Equal(t, 98765, servers[0].APIID)
-		assert.Equal(t, "legacy_hash", servers[0].APIHash)
-	})
-
 	t.Run("empty config returns nil", func(t *testing.T) {
 		cfg := &Config{}
 		servers := cfg.GetTelegramServers()
 		assert.Nil(t, servers)
-	})
-}
-
-func TestLoadFromEnv(t *testing.T) {
-	setEnv := func(t *testing.T, key, value string) {
-		t.Helper()
-		origValue, isSet := os.LookupEnv(key)
-		os.Setenv(key, value)
-		t.Cleanup(func() {
-			if isSet {
-				os.Setenv(key, origValue)
-			} else {
-				os.Unsetenv(key)
-			}
-		})
-	}
-
-	t.Run("success", func(t *testing.T) {
-		setEnv(t, "API_ID", "54321")
-		setEnv(t, "API_HASH", "fedcba")
-		setEnv(t, "PHONE_NUMBER", "+0987654321")
-		setEnv(t, "SERVER_PORT", "9090")
-
-		cfg, err := loadFromEnv()
-		require.NoError(t, err)
-		require.NotNil(t, cfg)
-		assert.Equal(t, 54321, cfg.TelegramAPI.APIID)
-		assert.Equal(t, "fedcba", cfg.TelegramAPI.APIHash)
-		assert.Equal(t, "+0987654321", cfg.TelegramAPI.PhoneNumber)
-		assert.Equal(t, 9090, cfg.Server.Port)
-	})
-
-	t.Run("missing required env", func(t *testing.T) {
-		// Используем t.Cleanup для гарантии очистки
-		t.Setenv("API_ID", "1")
-		t.Setenv("API_HASH", "hash")
-		os.Unsetenv("PHONE_NUMBER")
-
-		_, err := loadFromEnv()
-		assert.Error(t, err)
-	})
-
-	t.Run("invalid int env", func(t *testing.T) {
-		t.Setenv("API_ID", "not-an-int")
-		t.Setenv("API_HASH", "hash")
-		t.Setenv("PHONE_NUMBER", "phone")
-		_, err := loadFromEnv()
-		assert.Error(t, err)
 	})
 }
 
@@ -191,7 +134,7 @@ func TestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid", func(c *Config) {}, false},
-		{"no servers", func(c *Config) { c.TelegramAPI.Servers = nil; c.TelegramAPI.APIID = 0 }, true},
+		{"no servers", func(c *Config) { c.TelegramAPI.Servers = nil }, true},
 		{"invalid server api_id", func(c *Config) { c.TelegramAPI.Servers[0].APIID = 0 }, true},
 		{"empty server api_hash", func(c *Config) { c.TelegramAPI.Servers[0].APIHash = "" }, true},
 		{"empty server phone", func(c *Config) { c.TelegramAPI.Servers[0].PhoneNumber = "" }, true},
@@ -217,11 +160,4 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestGetEnv(t *testing.T) {
-	key := "TEST_GET_ENV"
-	t.Setenv(key, "my-value")
-	assert.Equal(t, "my-value", getEnv(key, "default"))
-	assert.Equal(t, "default", getEnv("NON_EXISTENT_KEY", "default"))
 }

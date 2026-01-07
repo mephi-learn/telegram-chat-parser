@@ -32,10 +32,11 @@ type TextEntity struct {
 // User представляет участника чата.
 // Это наша внутренняя модель, а не структура из JSON.
 type User struct {
-	ID       int64
-	Name     string
-	Username string
-	Bio      string
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Username string `json:"username"`
+	Bio      string `json:"bio"`
+	Channel  string `json:"channel,omitempty"`
 }
 
 // RawParticipant представляет "сырые" данные об участнике, извлеченные из файла,

@@ -78,9 +78,11 @@
       "id": 123456,
       "name": "Full Name",
       "username": "username",
-      "bio": "User bio"
+      "bio": "User bio",
+      "channel": "channel_name"
     }
     ```
+    *   `channel` (string, optional): Если в `bio` пользователя найдена ссылка на Telegram-канал (вида `@channel_name` или `t.me/channel_name`), здесь будет указано его имя. Поле отсутствует, если канал не найден.
 *   **Result (с пагинацией):**
     ```json
     {

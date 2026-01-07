@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,25 @@ import (
 
 // ErrParticipantNotResolved - терминальная ошибка, указывающая, что участник не может быть найден.
 var ErrParticipantNotResolved = errors.New("participant not resolvable")
+
+// channelRegexp — это скомпилированное регулярное выражение для поиска упоминаний каналов в bio пользователя.
+// Оно ищет шаблоны вида @channelname или t.me/channelname.
+var channelRegexp = regexp.MustCompile(`(?:@|t\.me/)([a-zA-Z0-9_]{5,})`)
+
+// extractChannelFromBio парсит bio пользователя для поиска потенциального упоминания канала.
+// Возвращает имя канала, если оно найдено, в противном случае — пустую строку.
+func extractChannelFromBio(bio string) string {
+	if bio == "" {
+		return ""
+	}
+
+	matches := channelRegexp.FindStringSubmatch(bio)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+
+	return ""
+}
 
 // Config хранит конфигурацию для EnrichmentService.
 type Config struct {
@@ -331,11 +351,14 @@ func (s *EnrichmentService) enrichParticipant(ctx context.Context, cfg *Config, 
 		return domain.User{}, fmt.Errorf("failed to get full user info for %d: %w", tgUser.ID, bioErr)
 	}
 
+	channel := extractChannelFromBio(bio)
+
 	return domain.User{
 		ID:       tgUser.ID,
 		Name:     strings.TrimSpace(fmt.Sprintf("%s %s", tgUser.FirstName, tgUser.LastName)),
 		Username: tgUser.Username,
 		Bio:      bio,
+		Channel:  channel,
 	}, nil
 }
 
