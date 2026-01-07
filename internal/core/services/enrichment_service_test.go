@@ -103,6 +103,7 @@ func TestEnrichmentService_Enrich_Success(t *testing.T) {
 	assert.Len(t, users, 1)
 	assert.Equal(t, "Test User", users[0].Name)
 	assert.Equal(t, "Bio", users[0].Bio)
+	assert.Empty(t, users[0].Channel, "Channel should be empty for a bio without a link")
 	router.AssertExpectations(t)
 	client.AssertExpectations(t)
 }
@@ -368,4 +369,60 @@ func TestEnrichmentService_Enrich_Deduplication(t *testing.T) {
 
 	router.AssertExpectations(t)
 	client.AssertExpectations(t)
+}
+
+func TestExtractChannelFromBio(t *testing.T) {
+	testCases := []struct {
+		name        string
+		bio         string
+		wantChannel string
+	}{
+		{
+			name:        "Bio with @channelname",
+			bio:         "Check out my cool channel @my_awesome_channel for updates!",
+			wantChannel: "my_awesome_channel",
+		},
+		{
+			name:        "Bio with t.me/ link",
+			bio:         "Follow me on t.me/another_channel_123",
+			wantChannel: "another_channel_123",
+		},
+		{
+			name:        "Bio with t.me/ link at the beginning",
+			bio:         "t.me/start_channel and some other text",
+			wantChannel: "start_channel",
+		},
+		{
+			name:        "Bio with @ at the beginning",
+			bio:         "@just_a_channel_name",
+			wantChannel: "just_a_channel_name",
+		},
+		{
+			name:        "Bio without channel",
+			bio:         "Just a regular bio with no links.",
+			wantChannel: "",
+		},
+		{
+			name:        "Empty bio",
+			bio:         "",
+			wantChannel: "",
+		},
+		{
+			name:        "Bio with short username",
+			bio:         "My channel is @short",
+			wantChannel: "",
+		},
+		{
+			name:        "Bio with multiple mentions, first one is taken",
+			bio:         "Follow @channel1 and also @channel2",
+			wantChannel: "channel1",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractChannelFromBio(tc.bio)
+			assert.Equal(t, tc.wantChannel, got)
+		})
+	}
 }
