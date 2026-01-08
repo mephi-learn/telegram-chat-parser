@@ -139,7 +139,7 @@ func (r *Router) GetClient(ctx context.Context) (ports.TelegramClient, error) {
 
 	client, err := strategy.Next(clients)
 	if err != nil {
-		r.log.ErrorContext(ctx, "Strategy failed to get next client", "error", err)
+		r.log.DebugContext(ctx, "Strategy failed to get next client", "error", err)
 		return nil, fmt.Errorf("strategy failed to get next client: %w", err)
 	}
 
@@ -167,6 +167,23 @@ func (r *Router) Stop() {
 	close(r.done)
 	r.wg.Wait()
 	r.log.Info("router stopped")
+}
+
+// NextRecoveryTime возвращает ближайшее время, когда один из неработоспособных клиентов
+// может снова стать доступным. Если неработоспособных клиентов нет или для них
+// не установлено время восстановления, возвращает нулевое значение time.Time.
+func (r *Router) NextRecoveryTime() time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var nextRecovery time.Time
+	for _, c := range r.unhealthy {
+		recoveryTime := c.GetRecoveryTime()
+		if !recoveryTime.IsZero() && (nextRecovery.IsZero() || recoveryTime.Before(nextRecovery)) {
+			nextRecovery = recoveryTime
+		}
+	}
+	return nextRecovery
 }
 
 // healthCheckLoop - это фоновая горутина, которая периодически

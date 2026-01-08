@@ -144,6 +144,13 @@ func (c *Client) ID() string {
 	return c.id
 }
 
+// GetRecoveryTime возвращает время, до которого клиент считается неработоспособным.
+func (c *Client) GetRecoveryTime() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.unhealthyUntil
+}
+
 // Start запускает фоновый процесс клиента, включая аутентификацию.
 // Должен быть вызван один раз перед использованием клиента.
 func (c *Client) Start(ctx context.Context) {

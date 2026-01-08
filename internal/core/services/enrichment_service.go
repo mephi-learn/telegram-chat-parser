@@ -423,7 +423,16 @@ func (s *EnrichmentService) executeOperation(ctx context.Context, logArgs []any,
 		s.log.DebugContext(ctx, "Attempting to get a client from the router")
 		apiClient, err := s.router.GetClient(ctx)
 		if err != nil {
-			s.log.WarnContext(ctx, "Failed to get a client from the router, will retry", "error", err, "pause", s.clientRetryPause)
+			logArgs := []any{"error", err, "pause", s.clientRetryPause}
+			if nextRecovery := s.router.NextRecoveryTime(); !nextRecovery.IsZero() {
+				remaining := time.Until(nextRecovery).Round(time.Second)
+				if remaining > 0 {
+					logArgs = append(logArgs, "next_recovery_in", remaining)
+				}
+			}
+
+			s.log.WarnContext(ctx, "Failed to get a client from the router, will retry", logArgs...)
+
 			select {
 			case <-time.After(s.clientRetryPause):
 				continue

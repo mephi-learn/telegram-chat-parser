@@ -49,6 +49,7 @@ func (m *mockClient) UsersGetFullUser(ctx context.Context, request tg.InputUserC
 func (m *mockClient) Health(ctx context.Context) error { return nil }
 func (m *mockClient) ID() string                       { return "mock-client" }
 func (m *mockClient) Start(ctx context.Context)        {}
+func (m *mockClient) GetRecoveryTime() time.Time       { return time.Time{} }
 
 // mockRouter — это мок для интерфейса ports.Router.
 type mockRouter struct {
@@ -64,6 +65,11 @@ func (m *mockRouter) GetClient(ctx context.Context) (ports.TelegramClient, error
 }
 
 func (m *mockRouter) Stop() {}
+
+func (m *mockRouter) NextRecoveryTime() time.Time {
+	args := m.Called()
+	return args.Get(0).(time.Time)
+}
 
 func TestEnrichmentService_Enrich_Success(t *testing.T) {
 	router := new(mockRouter)
@@ -145,6 +151,7 @@ func TestEnrichmentService_Enrich_RetryOnGetClientError(t *testing.T) {
 
 	// Первый GetClient неудачен, второй успешен
 	router.On("GetClient", mock.Anything).Return(nil, errors.New("NO_CLIENTS")).Once()
+	router.On("NextRecoveryTime").Return(time.Time{}).Once()          // Добавляем ожидание вызова
 	router.On("GetClient", mock.Anything).Return(client, nil).Twice() // Для resolve и get full user
 
 	client.On("ContactsResolveUsername", mock.Anything, mock.Anything).Return(resolvedPeer, nil).Once()

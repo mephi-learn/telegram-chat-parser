@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/gotd/td/tg"
 )
@@ -14,12 +15,14 @@ type TelegramClient interface {
 	Health(ctx context.Context) error
 	ID() string
 	Start(ctx context.Context)
+	GetRecoveryTime() time.Time
 }
 
 // Router определяет интерфейс для роутера клиентов Telegram.
 type Router interface {
 	GetClient(ctx context.Context) (TelegramClient, error)
 	Stop()
+	NextRecoveryTime() time.Time
 }
 
 // Strategy определяет интерфейс для стратегии выбора клиента.

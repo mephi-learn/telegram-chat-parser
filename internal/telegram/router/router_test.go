@@ -62,6 +62,10 @@ func (m *mockClient) setHealthy(isHealthy bool) {
 	}
 }
 
+func (m *mockClient) GetRecoveryTime() time.Time {
+	return time.Time{}
+}
+
 func (m *mockClient) setReturnError(err error) {
 	m.returnErr = err
 }
