@@ -15,7 +15,6 @@ import (
 	"telegram-chat-parser/internal/server"
 	"telegram-chat-parser/internal/server/usecase"
 	"telegram-chat-parser/internal/telegram/router"
-	"time"
 )
 
 func main() {
@@ -60,7 +59,7 @@ func run() error {
 	tgServers := cfg.GetTelegramServers()
 	tgRouter, err := router.NewRouter(appCtx,
 		router.WithServerConfigs(tgServers),
-		router.WithHealthCheckInterval(time.Duration(cfg.TelegramAPI.HealthCheckIntervalSeconds)*time.Second),
+		router.WithHealthCheckInterval(cfg.TelegramAPI.HealthCheckInterval),
 	)
 	if err != nil {
 		appCancel()
@@ -73,8 +72,9 @@ func run() error {
 	parserSvc := parser.NewJsonParser()
 	extractorSvc := services.NewExtractionService()
 	enricherSvc := services.NewEnrichmentService(tgRouter,
-		services.WithPoolSize(cfg.Enrichment.PoolSize),
-		services.WithClientRetryPause(time.Duration(cfg.Enrichment.ClientRetryPauseSeconds)*time.Second),
+		cfg.Enrichment.PoolSize,
+		cfg.Enrichment.ClientRetryPause,
+		cfg.Enrichment.OperationTimeout,
 	)
 	processor := usecase.NewProcessChatUseCase(cfg, parserSvc, extractorSvc, enricherSvc, cacheStore)
 
@@ -106,7 +106,7 @@ func run() error {
 	slog.Info("Application context canceled, waiting for background services to stop...")
 
 	// Затем останавливаем HTTP-сервер
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Server.ShutdownTimeoutSeconds)*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {

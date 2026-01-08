@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v2"
@@ -11,51 +12,56 @@ import (
 
 // Server содержит конфигурацию сервера
 type Server struct {
-	Host                   string `json:"host" yaml:"host"`
-	Port                   int    `json:"port" yaml:"port"`
-	ShutdownTimeoutSeconds int    `json:"shutdown_timeout_seconds" yaml:"shutdown_timeout_seconds"`
+	Host            string        `yaml:"host"`
+	Port            int           `yaml:"port"`
+	ReadTimeout     time.Duration `yaml:"read_timeout"`
+	WriteTimeout    time.Duration `yaml:"write_timeout"`
+	IdleTimeout     time.Duration `yaml:"idle_timeout"`
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	MaxUploadSizeMB int64         `yaml:"max_upload_size_mb"`
+	CleanupInterval time.Duration `yaml:"cleanup_interval"`
 }
 
 // TelegramAPIServer содержит конфигурацию одного сервера Telegram API
 type TelegramAPIServer struct {
-	APIID       int    `json:"api_id" yaml:"api_id"`
-	APIHash     string `json:"api_hash" yaml:"api_hash"`
-	PhoneNumber string `json:"phone_number" yaml:"phone_number"`
-	SessionFile string `json:"session_file" yaml:"session_file"`
+	APIID       int    `yaml:"api_id"`
+	APIHash     string `yaml:"api_hash"`
+	PhoneNumber string `yaml:"phone_number"`
+	SessionFile string `yaml:"session_file"`
 }
 
 // TelegramAPI содержит конфигурацию Telegram API
 type TelegramAPI struct {
-	// Новый формат для нескольких серверов
-	Servers []TelegramAPIServer `json:"servers" yaml:"servers"`
-
-	HealthCheckIntervalSeconds int `json:"health_check_interval_seconds" yaml:"health_check_interval_seconds"`
+	Servers             []TelegramAPIServer `yaml:"servers"`
+	HealthCheckInterval time.Duration       `yaml:"health_check_interval"`
 }
 
 // Processing содержит конфигурацию обработки
 type Processing struct {
-	TaskTimeoutSeconds int `json:"task_timeout_seconds" yaml:"task_timeout_seconds"` // 0 - без ограничений
-	CacheTTLMinutes    int `json:"cache_ttl_minutes" yaml:"cache_ttl_minutes"`
+	TaskTimeout time.Duration `yaml:"task_timeout"` // 0 - без ограничений
+	TaskTTL     time.Duration `yaml:"task_ttl"`
+	CacheTTL    time.Duration `yaml:"cache_ttl"`
 }
 
 // Enrichment содержит конфигурацию сервиса обогащения данных
 type Enrichment struct {
-	PoolSize                int `json:"pool_size" yaml:"pool_size"`
-	ClientRetryPauseSeconds int `json:"client_retry_pause_seconds" yaml:"client_retry_pause_seconds"`
+	PoolSize         int           `yaml:"pool_size"`
+	ClientRetryPause time.Duration `yaml:"client_retry_pause"`
+	OperationTimeout time.Duration `yaml:"operation_timeout"`
 }
 
 // Logging содержит конфигурацию логирования
 type Logging struct {
-	Level string `json:"level" yaml:"level"` // debug, info, warn, error
+	Level string `yaml:"level"` // debug, info, warn, error
 }
 
 // Config содержит конфигурацию приложения
 type Config struct {
-	Server      Server      `json:"server" yaml:"server"`
-	TelegramAPI TelegramAPI `json:"telegram_api" yaml:"telegram_api"`
-	Processing  Processing  `json:"processing" yaml:"processing"`
-	Enrichment  Enrichment  `json:"enrichment" yaml:"enrichment"`
-	Logging     Logging     `json:"logging" yaml:"logging"`
+	Server      Server      `yaml:"server"`
+	TelegramAPI TelegramAPI `yaml:"telegram_api"`
+	Processing  Processing  `yaml:"processing"`
+	Enrichment  Enrichment  `yaml:"enrichment"`
+	Logging     Logging     `yaml:"logging"`
 }
 
 // GetTelegramServers возвращает список конфигураций серверов Telegram.
@@ -69,9 +75,10 @@ func LoadConfig() (*Config, error) {
 	// Загрузка .env файла игнорируется, если он не найден.
 	_ = godotenv.Load()
 
+	cfg := defaultConfig()
+
 	// Загрузка конфигурации из YAML-файла является единственным поддерживаемым способом.
-	cfg, err := loadFromYAML("config.yml")
-	if err != nil {
+	if err := loadFromYAML("config.yml", cfg); err != nil {
 		return nil, fmt.Errorf("не удалось загрузить конфигурацию: %w", err)
 	}
 
@@ -79,18 +86,52 @@ func LoadConfig() (*Config, error) {
 }
 
 // loadFromYAML загружает конфигурацию из YAML-файла
-func loadFromYAML(filename string) (*Config, error) {
+func loadFromYAML(filename string, cfg *Config) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		return nil, fmt.Errorf("не удалось прочитать файл конфигурации %s: %w", filename, err)
+		// Если файл не найден, это не ошибка, мы просто используем значения по умолчанию.
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("не удалось прочитать файл конфигурации %s: %w", filename, err)
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("не удалось разобрать YAML конфигурацию: %w", err)
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return fmt.Errorf("не удалось разобрать YAML конфигурацию: %w", err)
 	}
 
-	return &cfg, nil
+	return nil
+}
+
+func defaultConfig() *Config {
+	return &Config{
+		Server: Server{
+			Host:            DefaultServerHost,
+			Port:            DefaultServerPort,
+			ReadTimeout:     DefaultReadTimeout,
+			WriteTimeout:    DefaultWriteTimeout,
+			IdleTimeout:     DefaultIdleTimeout,
+			ShutdownTimeout: DefaultShutdownTimeout,
+			MaxUploadSizeMB: DefaultMaxUploadSizeMB,
+			CleanupInterval: DefaultCleanupInterval,
+		},
+		TelegramAPI: TelegramAPI{
+			HealthCheckInterval: DefaultHealthCheckInterval,
+		},
+		Processing: Processing{
+			TaskTimeout: DefaultTaskTimeout,
+			TaskTTL:     DefaultTaskTTL,
+			CacheTTL:    DefaultCacheTTL,
+		},
+		Enrichment: Enrichment{
+			PoolSize:         DefaultEnrichmentPoolSize,
+			ClientRetryPause: DefaultEnrichmentClientRetryPause,
+			OperationTimeout: DefaultEnrichmentOperationTimeout,
+		},
+		Logging: Logging{
+			Level: DefaultLogLevel,
+		},
+	}
 }
 
 // Address возвращает адрес сервера в формате "host:port"
@@ -123,28 +164,28 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("server.port должен быть действительным номером порта (1-65535)")
 	}
 
-	if c.Server.ShutdownTimeoutSeconds <= 0 {
-		return fmt.Errorf("server.shutdown_timeout_seconds должно быть положительным")
+	if c.Server.ShutdownTimeout <= 0 {
+		return fmt.Errorf("server.shutdown_timeout должно быть положительным")
 	}
 
-	if c.Processing.TaskTimeoutSeconds < 0 {
-		return fmt.Errorf("processing.task_timeout_seconds должно быть неотрицательным (0 для отсутствия ограничений)")
+	if c.Processing.TaskTimeout < 0 {
+		return fmt.Errorf("processing.task_timeout должно быть неотрицательным (0 для отсутствия ограничений)")
 	}
 
-	if c.Processing.CacheTTLMinutes <= 0 {
-		return fmt.Errorf("processing.cache_ttl_minutes должно быть положительным целым числом")
+	if c.Processing.CacheTTL <= 0 {
+		return fmt.Errorf("processing.cache_ttl должно быть положительным")
 	}
 
-	if c.TelegramAPI.HealthCheckIntervalSeconds <= 0 {
-		return fmt.Errorf("telegram_api.health_check_interval_seconds должно быть положительным")
+	if c.TelegramAPI.HealthCheckInterval <= 0 {
+		return fmt.Errorf("telegram_api.health_check_interval должно быть положительным")
 	}
 
 	if c.Enrichment.PoolSize <= 0 {
 		return fmt.Errorf("enrichment.pool_size должно быть положительным")
 	}
 
-	if c.Enrichment.ClientRetryPauseSeconds <= 0 {
-		return fmt.Errorf("enrichment.client_retry_pause_seconds должно быть положительным")
+	if c.Enrichment.ClientRetryPause <= 0 {
+		return fmt.Errorf("enrichment.client_retry_pause должно быть положительным")
 	}
 
 	switch c.Logging.Level {

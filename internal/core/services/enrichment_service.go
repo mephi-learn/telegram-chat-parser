@@ -39,50 +39,8 @@ func extractChannelFromBio(bio string) string {
 	return ""
 }
 
-// Config хранит конфигурацию для EnrichmentService.
-type Config struct {
-	// TotalTimeout — максимальная продолжительность обработки всего списка участников.
-	TotalTimeout time.Duration
-	// OperationTimeout — таймаут для одного вызова Telegram API.
-	OperationTimeout time.Duration
-	// PoolSize — количество одновременных воркеров для обогащения.
-	PoolSize int
-	// ClientRetryPause — продолжительность паузы перед повторной попыткой получить клиент от роутера.
-	ClientRetryPause time.Duration
-}
-
 // Option — функциональная опция для настройки EnrichmentService.
 type Option func(*EnrichmentService)
-
-// WithTotalTimeout устанавливает общий таймаут для процесса обогащения.
-func WithTotalTimeout(d time.Duration) Option {
-	return func(s *EnrichmentService) {
-		s.config.TotalTimeout = d
-	}
-}
-
-// WithOperationTimeout устанавливает таймаут для одной операции API.
-func WithOperationTimeout(d time.Duration) Option {
-	return func(s *EnrichmentService) {
-		s.config.OperationTimeout = d
-	}
-}
-
-// WithPoolSize устанавливает количество одновременных воркеров.
-func WithPoolSize(n int) Option {
-	return func(s *EnrichmentService) {
-		if n > 0 {
-			s.config.PoolSize = n
-		}
-	}
-}
-
-// WithClientRetryPause устанавливает длительность паузы между повторными попытками получения клиента.
-func WithClientRetryPause(d time.Duration) Option {
-	return func(s *EnrichmentService) {
-		s.config.ClientRetryPause = d
-	}
-}
 
 // WithLogger устанавливает логгер для сервиса.
 func WithLogger(l *slog.Logger) Option {
@@ -96,24 +54,22 @@ func WithLogger(l *slog.Logger) Option {
 // EnrichmentService обогащает данные участников, используя Telegram API.
 // Сервис не хранит состояние и безопасен для одновременного использования.
 type EnrichmentService struct {
-	router ports.Router
-	config Config
-	log    *slog.Logger
+	router           ports.Router
+	log              *slog.Logger
+	poolSize         int
+	clientRetryPause time.Duration
+	operationTimeout time.Duration
 }
 
 // NewEnrichmentService создает новый EnrichmentService с использованием функциональных опций.
 // Он начинает с конфигурации по умолчанию, которая может быть переопределена предоставленными опциями.
-func NewEnrichmentService(r ports.Router, opts ...Option) *EnrichmentService {
-	// Конфигурация по умолчанию.
+func NewEnrichmentService(r ports.Router, poolSize int, clientRetryPause, operationTimeout time.Duration, opts ...Option) *EnrichmentService {
 	s := &EnrichmentService{
-		router: r,
-		config: Config{
-			TotalTimeout:     10 * time.Minute,
-			OperationTimeout: 5 * time.Second,
-			PoolSize:         1,
-			ClientRetryPause: 1 * time.Second,
-		},
-		log: slog.Default(),
+		router:           r,
+		log:              slog.Default(),
+		poolSize:         poolSize,
+		clientRetryPause: clientRetryPause,
+		operationTimeout: operationTimeout,
 	}
 
 	for _, opt := range opts {
@@ -170,24 +126,18 @@ func (s *EnrichmentService) Enrich(ctx context.Context, participants []domain.Ra
 		return nil, nil
 	}
 
-	cfg := s.config // Используем конфигурацию, заданную при создании сервиса
-
-	ctx, cancel := context.WithTimeout(ctx, cfg.TotalTimeout)
-	defer cancel()
-
 	s.log.InfoContext(ctx, "Starting enrichment process",
 		"participants", len(participants),
-		"pool_size", cfg.PoolSize,
-		"total_timeout", cfg.TotalTimeout,
+		"pool_size", s.poolSize,
 	)
 
 	tasks := make(chan domain.RawParticipant, len(participants))
 	results := make(chan enrichResult, len(participants))
 	var wg sync.WaitGroup
 
-	for i := 0; i < cfg.PoolSize; i++ {
+	for i := 0; i < s.poolSize; i++ {
 		wg.Add(1)
-		go s.worker(ctx, &wg, &cfg, tasks, results)
+		go s.worker(ctx, &wg, tasks, results)
 	}
 
 	for _, p := range participants {
@@ -257,7 +207,7 @@ func (s *EnrichmentService) Enrich(ctx context.Context, participants []domain.Ra
 	return enrichedUsers, nil
 }
 
-func (s *EnrichmentService) worker(ctx context.Context, wg *sync.WaitGroup, cfg *Config, tasks chan domain.RawParticipant, results chan<- enrichResult) {
+func (s *EnrichmentService) worker(ctx context.Context, wg *sync.WaitGroup, tasks chan domain.RawParticipant, results chan<- enrichResult) {
 	defer wg.Done()
 	for {
 		select {
@@ -270,7 +220,7 @@ func (s *EnrichmentService) worker(ctx context.Context, wg *sync.WaitGroup, cfg 
 				return
 			}
 
-			user, err := s.enrichParticipant(ctx, cfg, p)
+			user, err := s.enrichParticipant(ctx, p)
 			if err != nil {
 				// Проверяем, является ли ошибка терминальной (например, пользователь не найден).
 				if errors.Is(err, ErrParticipantNotResolved) {
@@ -296,7 +246,7 @@ func (s *EnrichmentService) worker(ctx context.Context, wg *sync.WaitGroup, cfg 
 	}
 }
 
-func (s *EnrichmentService) enrichParticipant(ctx context.Context, cfg *Config, p domain.RawParticipant) (domain.User, error) {
+func (s *EnrichmentService) enrichParticipant(ctx context.Context, p domain.RawParticipant) (domain.User, error) {
 	if p.Username == "" && p.UserID == "" {
 		s.log.DebugContext(ctx, "Participant has no username or ID, skipping enrichment", "participant_name", p.Name)
 		return domain.User{ID: 0, Name: p.Name}, nil
@@ -307,7 +257,7 @@ func (s *EnrichmentService) enrichParticipant(ctx context.Context, cfg *Config, 
 
 	if p.Username != "" {
 		s.log.DebugContext(ctx, "Resolving participant by username", "username", p.Username)
-		tgUser, err = s.resolveByUsername(ctx, cfg, p.Username)
+		tgUser, err = s.resolveByUsername(ctx, p.Username)
 	} else {
 		// Если у пользователя не указан Username, его не нужно обогащать.
 		// Вместо вызова API возвращаем пользователя с имеющимися данными.
@@ -318,7 +268,7 @@ func (s *EnrichmentService) enrichParticipant(ctx context.Context, cfg *Config, 
 		}
 		return domain.User{ID: id, Name: p.Name}, nil
 
-		// tgUser, err = s.resolveByUserID(ctx, cfg, p.UserID)
+		// tgUser, err = s.resolveByUserID(ctx, p.UserID)
 	}
 
 	if err != nil {
@@ -344,7 +294,7 @@ func (s *EnrichmentService) enrichParticipant(ctx context.Context, cfg *Config, 
 
 	s.log.DebugContext(ctx, "Participant resolved successfully", "participant", p, "tg_user_id", tgUser.ID)
 
-	bio, bioErr := s.getFullUserInfo(ctx, cfg, tgUser)
+	bio, bioErr := s.getFullUserInfo(ctx, tgUser)
 	if bioErr != nil {
 		// Ошибку получения bio считаем некритичной, но возвращаем ее, чтобы можно было перепоставить в очередь.
 		s.log.WarnContext(ctx, "Failed to get full user info, will retry", "tg_user_id", tgUser.ID, "error", bioErr)
@@ -362,11 +312,11 @@ func (s *EnrichmentService) enrichParticipant(ctx context.Context, cfg *Config, 
 	}, nil
 }
 
-func (s *EnrichmentService) resolveByUsername(ctx context.Context, cfg *Config, username string) (*tg.User, error) {
+func (s *EnrichmentService) resolveByUsername(ctx context.Context, username string) (*tg.User, error) {
 	cleanUsername := strings.TrimPrefix(username, "@")
 	s.log.DebugContext(ctx, "Executing ContactsResolveUsername", "username", cleanUsername)
 	logArgs := []any{"operation", "ContactsResolveUsername", "username", cleanUsername}
-	res, err := s.executeOperation(ctx, cfg, logArgs, func(ctx context.Context, cl ports.TelegramClient) (any, error) {
+	res, err := s.executeOperation(ctx, logArgs, func(ctx context.Context, cl ports.TelegramClient) (any, error) {
 		return cl.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: cleanUsername})
 	})
 	if err != nil {
@@ -394,7 +344,7 @@ func (s *EnrichmentService) resolveByUsername(ctx context.Context, cfg *Config, 
 	return nil, err
 }
 
-func (s *EnrichmentService) resolveByUserID(ctx context.Context, cfg *Config, userIDStr string) (*tg.User, error) {
+func (s *EnrichmentService) resolveByUserID(ctx context.Context, userIDStr string) (*tg.User, error) {
 	id, err := strconv.ParseInt(strings.TrimPrefix(userIDStr, "user"), 10, 64)
 	if err != nil {
 		err = fmt.Errorf("invalid user ID format: %s: %w", userIDStr, err)
@@ -404,7 +354,7 @@ func (s *EnrichmentService) resolveByUserID(ctx context.Context, cfg *Config, us
 
 	s.log.DebugContext(ctx, "Executing UsersGetUsers", "user_id", id)
 	logArgs := []any{"operation", "UsersGetUsers", "user_id", id}
-	res, err := s.executeOperation(ctx, cfg, logArgs, func(ctx context.Context, cl ports.TelegramClient) (any, error) {
+	res, err := s.executeOperation(ctx, logArgs, func(ctx context.Context, cl ports.TelegramClient) (any, error) {
 		return cl.UsersGetUsers(ctx, []tg.InputUserClass{&tg.InputUser{UserID: id}})
 	})
 	if err != nil {
@@ -432,7 +382,7 @@ func (s *EnrichmentService) resolveByUserID(ctx context.Context, cfg *Config, us
 	return nil, err
 }
 
-func (s *EnrichmentService) getFullUserInfo(ctx context.Context, cfg *Config, user *tg.User) (string, error) {
+func (s *EnrichmentService) getFullUserInfo(ctx context.Context, user *tg.User) (string, error) {
 	accessHash, ok := user.GetAccessHash()
 	if !ok {
 		s.log.WarnContext(ctx, "User object is missing access hash", "user_id", user.ID)
@@ -441,7 +391,7 @@ func (s *EnrichmentService) getFullUserInfo(ctx context.Context, cfg *Config, us
 
 	s.log.DebugContext(ctx, "Executing UsersGetFullUser", "user_id", user.ID)
 	logArgs := []any{"operation", "UsersGetFullUser", "user_id", user.ID}
-	res, err := s.executeOperation(ctx, cfg, logArgs, func(ctx context.Context, cl ports.TelegramClient) (any, error) {
+	res, err := s.executeOperation(ctx, logArgs, func(ctx context.Context, cl ports.TelegramClient) (any, error) {
 		return cl.UsersGetFullUser(ctx, &tg.InputUser{UserID: user.ID, AccessHash: accessHash})
 	})
 	if err != nil {
@@ -463,7 +413,7 @@ func (s *EnrichmentService) getFullUserInfo(ctx context.Context, cfg *Config, us
 	return userFull.FullUser.About, nil
 }
 
-func (s *EnrichmentService) executeOperation(ctx context.Context, cfg *Config, logArgs []any, fn func(ctx context.Context, cl ports.TelegramClient) (any, error)) (any, error) {
+func (s *EnrichmentService) executeOperation(ctx context.Context, logArgs []any, fn func(ctx context.Context, cl ports.TelegramClient) (any, error)) (any, error) {
 	// Внутренний цикл отвечает за получение клиента. Он "бесконечный", но ограничен родительским контекстом.
 	for {
 		if err := ctx.Err(); err != nil {
@@ -473,9 +423,9 @@ func (s *EnrichmentService) executeOperation(ctx context.Context, cfg *Config, l
 		s.log.DebugContext(ctx, "Attempting to get a client from the router")
 		apiClient, err := s.router.GetClient(ctx)
 		if err != nil {
-			s.log.WarnContext(ctx, "Failed to get a client from the router, will retry", "error", err, "pause", cfg.ClientRetryPause)
+			s.log.WarnContext(ctx, "Failed to get a client from the router, will retry", "error", err, "pause", s.clientRetryPause)
 			select {
-			case <-time.After(cfg.ClientRetryPause):
+			case <-time.After(s.clientRetryPause):
 				continue
 			case <-ctx.Done():
 				return nil, fmt.Errorf("не удалось получить клиент, так как контекст был отменен: %w", ctx.Err())
@@ -484,7 +434,7 @@ func (s *EnrichmentService) executeOperation(ctx context.Context, cfg *Config, l
 
 		s.log.DebugContext(ctx, "Obtained client successfully", "client_id", apiClient.ID())
 
-		opCtx, opCancel := context.WithTimeout(ctx, cfg.OperationTimeout)
+		opCtx, opCancel := context.WithTimeout(ctx, s.operationTimeout)
 		res, opErr := fn(opCtx, apiClient)
 		opCancel()
 

@@ -12,7 +12,6 @@ import (
 	"telegram-chat-parser/internal/cache"
 	"telegram-chat-parser/internal/domain"
 	"telegram-chat-parser/internal/pkg/config"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -57,7 +56,7 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 		// Конечная точка для запуска новой задачи обработки
 		r.Post("/process", func(w http.ResponseWriter, r *http.Request) {
 			// Разбор мультипарт-формы
-			err := r.ParseMultipartForm(10 << 20) // максимум 10 MB
+			err := r.ParseMultipartForm(cfg.Server.MaxUploadSizeMB << 20)
 			if err != nil {
 				http.Error(w, "Не удалось разобрать форму", http.StatusBadRequest)
 				return
@@ -107,7 +106,7 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 			}
 
 			// Создание задачи в хранилище
-			taskStore.CreateTask(taskID, 24*time.Hour) // TTL для записи о задаче
+			taskStore.CreateTask(taskID, cfg.Processing.TaskTTL)
 
 			// Запуск обработки в горутине
 			go func() {
@@ -116,9 +115,9 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 
 				// Создание контекста для задачи с таймаутом из конфигурации.
 				taskCtx := context.Background()
-				if cfg.Processing.TaskTimeoutSeconds > 0 {
+				if cfg.Processing.TaskTimeout > 0 {
 					var cancel context.CancelFunc
-					taskCtx, cancel = context.WithTimeout(context.Background(), time.Duration(cfg.Processing.TaskTimeoutSeconds)*time.Second)
+					taskCtx, cancel = context.WithTimeout(context.Background(), cfg.Processing.TaskTimeout)
 					defer cancel()
 				}
 
@@ -164,7 +163,7 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 			taskID := uuid.NewString()
 
 			// Создание задачи в хранилище
-			taskStore.CreateTask(taskID, 24*time.Hour) // TTL для записи о задаче
+			taskStore.CreateTask(taskID, cfg.Processing.TaskTTL)
 
 			// Запуск обработки в горутине
 			go func() {
@@ -299,9 +298,9 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 	httpServer := &http.Server{
 		Addr:         cfg.Address(),
 		Handler:      chiRouter,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
 	s := &Server{
@@ -314,10 +313,10 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 
 	// Запуск тикера для очистки просроченных задач
 	ctx, cancel := context.WithCancel(context.Background())
-	s.taskStore.StartCleanupTicker(ctx, 1*time.Hour) // Очистка каждый час
+	s.taskStore.StartCleanupTicker(ctx, cfg.Server.CleanupInterval)
 
 	// Запуск тикера для очистки просроченных элементов кеша
-	s.cacheStore.StartCleanupTicker(ctx, 1*time.Hour) // Очистка каждый час
+	s.cacheStore.StartCleanupTicker(ctx, cfg.Server.CleanupInterval)
 
 	// Нам нужен способ остановить тикер при завершении работы
 	// Это упрощенный подход; более надежное решение лучше бы управляло этим жизненным циклом.
