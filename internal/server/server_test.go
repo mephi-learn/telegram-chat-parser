@@ -34,6 +34,14 @@ func (m *mockProcessor) ProcessChat(ctx context.Context, filePaths []string) ([]
 	return nil, args.Error(1)
 }
 
+func (m *mockProcessor) ProcessChatFromData(ctx context.Context, fileDataList [][]byte) ([]domain.User, error) {
+	args := m.Called(ctx, fileDataList)
+	if res := args.Get(0); res != nil {
+		return res.([]domain.User), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
 func TestServer(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.Server{
@@ -81,7 +89,7 @@ func TestServer(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, writer.Close())
 
-		mockProc.On("ProcessChat", mock.Anything, mock.AnythingOfType("[]string")).Return([]domain.User{}, nil).Once()
+		mockProc.On("ProcessChatFromData", mock.Anything, mock.AnythingOfType("[][]uint8")).Return([]domain.User{}, nil).Once()
 
 		req := httptest.NewRequest("POST", "/api/v1/process", &b)
 		req.Header.Set("Content-Type", writer.FormDataContentType())

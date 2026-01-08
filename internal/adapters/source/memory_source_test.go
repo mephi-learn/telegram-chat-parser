@@ -31,7 +31,7 @@ func TestMemorySource(t *testing.T) {
 
 		assert.Error(t, err)
 		assert.Nil(t, actualData)
-		assert.Contains(t, err.Error(), "данные не установлены")
+		assert.Contains(t, err.Error(), "data not set")
 	})
 
 	t.Run("Fetch возвращает копию данных", func(t *testing.T) {

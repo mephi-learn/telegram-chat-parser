@@ -437,7 +437,7 @@ func (s *EnrichmentService) executeOperation(ctx context.Context, logArgs []any,
 			case <-time.After(s.clientRetryPause):
 				continue
 			case <-ctx.Done():
-				return nil, fmt.Errorf("не удалось получить клиент, так как контекст был отменен: %w", ctx.Err())
+				return nil, fmt.Errorf("failed to get client as context was cancelled: %w", ctx.Err())
 			}
 		}
 
@@ -458,6 +458,6 @@ func (s *EnrichmentService) executeOperation(ctx context.Context, logArgs []any,
 		// Ошибка от операции возвращается вызывающей стороне, которая решит, что делать дальше (например, перепоставить задачу).
 		finalLogArgs = append(finalLogArgs, "error", opErr)
 		s.log.WarnContext(ctx, "API operation failed", finalLogArgs...)
-		return nil, fmt.Errorf("операция API завершилась с ошибкой: %w", opErr)
+		return nil, fmt.Errorf("API operation failed: %w", opErr)
 	}
 }

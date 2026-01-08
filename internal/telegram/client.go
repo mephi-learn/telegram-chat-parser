@@ -293,7 +293,7 @@ func (c *Client) do(ctx context.Context, f func(ctx context.Context) error) erro
 		select {
 		case runErr, ok := <-c.runErr:
 			if ok && runErr != nil {
-				return fmt.Errorf("клиент telegram не запущен: %w (ошибка операции: %v)", runErr, opErr)
+				return fmt.Errorf("telegram client is not running: %w (operation error: %v)", runErr, opErr)
 			}
 		default:
 			// Клиент все еще работает, возвращаем ошибку операции.

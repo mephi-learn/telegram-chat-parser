@@ -25,8 +25,8 @@ func TestCliSource(t *testing.T) {
 			t.Error("Ожидались nil данные для пустого пути к файлу, получены данные")
 		}
 
-		if err.Error() != "не указан путь к файлу" {
-			t.Errorf("Ожидалось сообщение об ошибке 'не указан путь к файлу', получено '%s'", err.Error())
+		if err.Error() != "file path not specified" {
+			t.Errorf("Ожидалось сообщение об ошибке 'file path not specified', получено '%s'", err.Error())
 		}
 	})
 

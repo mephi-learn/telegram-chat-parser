@@ -104,13 +104,13 @@ func CalculateHashFromString(data string) string {
 func CalculateFileHash(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return "", fmt.Errorf("не удалось открыть файл: %w", err)
+		return "", fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
-		return "", fmt.Errorf("не удалось прочитать файл: %w", err)
+		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil)), nil

@@ -55,13 +55,13 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 		// Конечная точка для запуска новой задачи обработки
 		r.Post("/process", func(w http.ResponseWriter, r *http.Request) {
 			if err := r.ParseMultipartForm(cfg.Server.MaxUploadSizeMB << 20); err != nil {
-				http.Error(w, "Не удалось разобрать форму", http.StatusBadRequest)
+				http.Error(w, "Failed to parse form", http.StatusBadRequest)
 				return
 			}
 
 			files := r.MultipartForm.File["files"]
 			if len(files) == 0 {
-				http.Error(w, "Файлы не загружены", http.StatusBadRequest)
+				http.Error(w, "No files uploaded", http.StatusBadRequest)
 				return
 			}
 
@@ -71,18 +71,18 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 			for i, fileHeader := range files {
 				file, err := fileHeader.Open()
 				if err != nil {
-					http.Error(w, "Не удалось открыть загруженный файл", http.StatusInternalServerError)
+					http.Error(w, "Failed to open uploaded file", http.StatusInternalServerError)
 					return
 				}
 				defer file.Close()
 
 				data, err := io.ReadAll(file)
 				if err != nil {
-					http.Error(w, "Не удалось прочитать загруженный файл", http.StatusInternalServerError)
+					http.Error(w, "Failed to read uploaded file", http.StatusInternalServerError)
 					return
 				}
 				fileDataList = append(fileDataList, data)
-				slog.Info("Загруженный файл прочитан в память", "size", len(data), "index", i)
+				slog.Info("Uploaded file read into memory", "size", len(data), "index", i)
 			}
 
 			// Создание задачи в хранилище
@@ -115,12 +115,12 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 				Hash string `json:"hash"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, "Не удалось декодировать тело запроса", http.StatusBadRequest)
+				http.Error(w, "Failed to decode request body", http.StatusBadRequest)
 				return
 			}
 
 			if req.Hash == "" {
-				http.Error(w, "Требуется хеш", http.StatusBadRequest)
+				http.Error(w, "Hash is required", http.StatusBadRequest)
 				return
 			}
 
@@ -139,15 +139,15 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 				if cachedItem, found := cacheStore.Get(req.Hash); found {
 					// Если найдено в кеше, обновить задачу кешированным результатом
 					taskStore.UpdateTaskResult(taskID, cachedItem.Data)
-					slog.Info("Попадание в кеш для хеша", "hash", req.Hash, "task_id", taskID)
+					slog.Info("Cache hit for hash", "hash", req.Hash, "task_id", taskID)
 					return
 				}
 
 				// Если в кеше не найдено, обычно нам нужен файл для обработки.
 				// В этой реализации мы вернем ошибку, если хеш не найден в кеше.
 				// В более продвинутой реализации вы могли бы хранить файл, связанный с хешем, и обрабатывать его здесь.
-				taskStore.UpdateTaskError(taskID, "Файл не найден в кеше для данного хеша")
-				slog.Info("Промах кеша для хеша", "hash", req.Hash, "task_id", taskID)
+				taskStore.UpdateTaskError(taskID, "File not found in cache for this hash")
+				slog.Info("Cache miss for hash", "hash", req.Hash, "task_id", taskID)
 			}()
 
 			// Возврат идентификатора задачи
@@ -162,7 +162,7 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 
 			task, err := taskStore.GetTask(taskID)
 			if err != nil {
-				http.Error(w, "Задача не найдена", http.StatusNotFound)
+				http.Error(w, "Task not found", http.StatusNotFound)
 				return
 			}
 
@@ -181,12 +181,12 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 
 			task, err := taskStore.GetTask(taskID)
 			if err != nil {
-				http.Error(w, "Задача не найдена", http.StatusNotFound)
+				http.Error(w, "Task not found", http.StatusNotFound)
 				return
 			}
 
 			if task.Status != TaskStatusCompleted {
-				http.Error(w, "Задача не завершена", http.StatusBadRequest)
+				http.Error(w, "Task is not completed", http.StatusBadRequest)
 				return
 			}
 
@@ -298,6 +298,6 @@ func (s *Server) ListenAndServe() error {
 
 // Shutdown корректно завершает работу HTTP-сервера
 func (s *Server) Shutdown(ctx context.Context) error {
-	slog.Info("Завершение работы HTTP-сервера")
+	slog.Info("Shutting down HTTP server")
 	return s.HTTPServer.Shutdown(ctx)
 }

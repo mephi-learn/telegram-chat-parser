@@ -18,7 +18,7 @@ func NewMemorySource(data []byte) ports.DataSource {
 // Fetch возвращает данные из памяти.
 func (s *MemorySource) Fetch() ([]byte, error) {
 	if s.data == nil {
-		return nil, fmt.Errorf("данные не установлены")
+		return nil, fmt.Errorf("data not set")
 	}
 
 	// Возвращаем копию данных, чтобы избежать изменений оригинальных данных

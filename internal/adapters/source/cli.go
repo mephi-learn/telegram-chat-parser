@@ -20,7 +20,7 @@ func NewCliSource(filePath string) ports.DataSource {
 // Fetch читает файл по указанному пути и возвращает его содержимое.
 func (s *CliSource) Fetch() ([]byte, error) {
 	if s.filePath == "" {
-		return nil, fmt.Errorf("не указан путь к файлу")
+		return nil, fmt.Errorf("file path not specified")
 	}
 
 	data, err := os.ReadFile(s.filePath)

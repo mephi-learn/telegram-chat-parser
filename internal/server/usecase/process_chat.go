@@ -62,7 +62,7 @@ func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePaths []strin
 	for _, filePath := range filePaths {
 		fileHash, err := cache.CalculateFileHash(filePath)
 		if err != nil {
-			return nil, fmt.Errorf("не удалось вычислить хеш файла %s: %w", filePath, err)
+			return nil, fmt.Errorf("failed to compute hash of file %s: %w", filePath, err)
 		}
 		fileHashes = append(fileHashes, fileHash)
 	}
@@ -82,18 +82,18 @@ func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePaths []strin
 		ds := source.NewCliSource(filePath)
 		data, err := ds.Fetch()
 		if err != nil {
-			return nil, fmt.Errorf("не удалось извлечь данные из %s: %w", filePath, err)
+			return nil, fmt.Errorf("failed to extract data from %s: %w", filePath, err)
 		}
 
 		chat, err := uc.parser.Parse(data)
 		if err != nil {
-			return nil, fmt.Errorf("не удалось разобрать данные из %s: %w", filePath, err)
+			return nil, fmt.Errorf("failed to parse data from %s: %w", filePath, err)
 		}
 		slog.Info("Разобран чат", "path", filePath, "message_count", len(chat.Messages))
 
 		rawParticipants, err := uc.extractor.ExtractRawParticipants(chat)
 		if err != nil {
-			return nil, fmt.Errorf("не удалось извлечь участников из %s: %w", filePath, err)
+			return nil, fmt.Errorf("failed to extract participants from %s: %w", filePath, err)
 		}
 		slog.Info("Извлечены участники", "path", filePath, "count", len(rawParticipants))
 
@@ -106,7 +106,7 @@ func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePaths []strin
 	slog.Info("Обогащение данных через Telegram API...")
 	finalUsers, err := uc.enricher.Enrich(taskCtx, allRawParticipants)
 	if err != nil {
-		return nil, fmt.Errorf("не удалось обогатить данные: %w", err)
+		return nil, fmt.Errorf("failed to enrich data: %w", err)
 	}
 
 	// Кеширование окончательного результата
@@ -160,13 +160,13 @@ func (uc *ProcessChatUseCase) ProcessChatFromData(ctx context.Context, fileDataL
 
 		chat, err := uc.parser.Parse(data)
 		if err != nil {
-			return nil, fmt.Errorf("не удалось разобрать данные из файла %d: %w", i, err)
+			return nil, fmt.Errorf("failed to parse data from file %d: %w", i, err)
 		}
 		slog.Info("Разобран чат", "index", i, "message_count", len(chat.Messages))
 
 		rawParticipants, err := uc.extractor.ExtractRawParticipants(chat)
 		if err != nil {
-			return nil, fmt.Errorf("не удалось извлечь участников из файла %d: %w", i, err)
+			return nil, fmt.Errorf("failed to extract participants from file %d: %w", i, err)
 		}
 		slog.Info("Извлечены участники", "index", i, "count", len(rawParticipants))
 
@@ -179,7 +179,7 @@ func (uc *ProcessChatUseCase) ProcessChatFromData(ctx context.Context, fileDataL
 	slog.Info("Обогащение данных через Telegram API...")
 	finalUsers, err := uc.enricher.Enrich(taskCtx, allRawParticipants)
 	if err != nil {
-		return nil, fmt.Errorf("не удалось обогатить данные: %w", err)
+		return nil, fmt.Errorf("failed to enrich data: %w", err)
 	}
 
 	// Кеширование окончательного результата

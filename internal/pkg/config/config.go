@@ -79,7 +79,7 @@ func LoadConfig() (*Config, error) {
 
 	// Загрузка конфигурации из YAML-файла является единственным поддерживаемым способом.
 	if err := loadFromYAML("config.yml", cfg); err != nil {
-		return nil, fmt.Errorf("не удалось загрузить конфигурацию: %w", err)
+		return nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
 
 	return cfg, nil
@@ -93,11 +93,11 @@ func loadFromYAML(filename string, cfg *Config) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("не удалось прочитать файл конфигурации %s: %w", filename, err)
+		return fmt.Errorf("failed to read config file %s: %w", filename, err)
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return fmt.Errorf("не удалось разобрать YAML конфигурацию: %w", err)
+		return fmt.Errorf("failed to parse YAML configuration: %w", err)
 	}
 
 	return nil
@@ -143,55 +143,55 @@ func (c *Config) Validate() error {
 	// Валидация Telegram API
 	servers := c.GetTelegramServers()
 	if len(servers) == 0 {
-		return fmt.Errorf("конфигурация telegram_api не найдена или пуста")
+		return fmt.Errorf("telegram_api configuration not found or empty")
 	}
 
 	for i, s := range servers {
 		if s.APIID <= 0 {
-			return fmt.Errorf("telegram_api.servers[%d].api_id должно быть положительным целым числом", i)
+			return fmt.Errorf("telegram_api.servers[%d].api_id must be a positive integer", i)
 		}
 		if s.APIHash == "" {
-			return fmt.Errorf("telegram_api.servers[%d].api_hash не может быть пустым", i)
+			return fmt.Errorf("telegram_api.servers[%d].api_hash cannot be empty", i)
 		}
 		if s.PhoneNumber == "" {
-			return fmt.Errorf("telegram_api.servers[%d].phone_number не может быть пустым", i)
+			return fmt.Errorf("telegram_api.servers[%d].phone_number cannot be empty", i)
 		}
 	}
 
 	// Валидация остальных полей
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
-		return fmt.Errorf("server.port должен быть действительным номером порта (1-65535)")
+		return fmt.Errorf("server.port must be a valid port number (1-65535)")
 	}
 
 	if c.Server.ShutdownTimeout <= 0 {
-		return fmt.Errorf("server.shutdown_timeout должно быть положительным")
+		return fmt.Errorf("server.shutdown_timeout must be positive")
 	}
 
 	if c.Processing.TaskTimeout < 0 {
-		return fmt.Errorf("processing.task_timeout должно быть неотрицательным (0 для отсутствия ограничений)")
+		return fmt.Errorf("processing.task_timeout must be non-negative (0 for no limits)")
 	}
 
 	if c.Processing.CacheTTL <= 0 {
-		return fmt.Errorf("processing.cache_ttl должно быть положительным")
+		return fmt.Errorf("processing.cache_ttl must be positive")
 	}
 
 	if c.TelegramAPI.HealthCheckInterval <= 0 {
-		return fmt.Errorf("telegram_api.health_check_interval должно быть положительным")
+		return fmt.Errorf("telegram_api.health_check_interval must be positive")
 	}
 
 	if c.Enrichment.PoolSize <= 0 {
-		return fmt.Errorf("enrichment.pool_size должно быть положительным")
+		return fmt.Errorf("enrichment.pool_size must be positive")
 	}
 
 	if c.Enrichment.ClientRetryPause <= 0 {
-		return fmt.Errorf("enrichment.client_retry_pause должно быть положительным")
+		return fmt.Errorf("enrichment.client_retry_pause must be positive")
 	}
 
 	switch c.Logging.Level {
 	case "debug", "info", "warn", "error":
 		// all good
 	default:
-		return fmt.Errorf("logging.level должен быть одним из: debug, info, warn, error")
+		return fmt.Errorf("logging.level must be one of: debug, info, warn, error")
 	}
 
 	return nil
