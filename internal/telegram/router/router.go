@@ -34,10 +34,11 @@ func WithServerConfigs(serverConfigs []config.TelegramAPIServer) Option {
 			// Используем опцию WithLogger, чтобы передать логгер роутера в каждый клиент.
 			// Логгер роутера к этому моменту уже должен быть инициализирован.
 			client := telegram.NewClient(telegram.Config{
-				APIID:       srvCfg.APIID,
-				APIHash:     srvCfg.APIHash,
-				PhoneNumber: srvCfg.PhoneNumber,
-				SessionPath: srvCfg.SessionFile,
+				APIID:        srvCfg.APIID,
+				APIHash:      srvCfg.APIHash,
+				PhoneNumber:  srvCfg.PhoneNumber,
+				SessionPath:  srvCfg.SessionFile,
+				RequestDelay: srvCfg.RequestDelay,
 			}, telegram.WithLogger(r.log.With("client_phone", srvCfg.PhoneNumber)))
 			clients = append(clients, client)
 		}

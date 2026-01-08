@@ -85,16 +85,19 @@ type Client struct {
 
 	mu             sync.RWMutex
 	unhealthyUntil time.Time
+	lastRequest    time.Time
+	requestDelay   time.Duration
 	runErr         chan error
 	startOnce      sync.Once
 }
 
 // Config содержит конфигурацию для создания нового клиента.
 type Config struct {
-	APIID       int
-	APIHash     string
-	PhoneNumber string
-	SessionPath string
+	APIID        int
+	APIHash      string
+	PhoneNumber  string
+	SessionPath  string
+	RequestDelay time.Duration
 }
 
 // ClientOption определяет функциональную опцию для конфигурации клиента.
@@ -123,13 +126,14 @@ func NewClient(cfg Config, opts ...ClientOption) *Client {
 	})
 
 	c := &Client{
-		id:         uuid.NewString(),
-		tgRunner:   &prodRunner{Client: tgClient},
-		authFlow:   auth.NewFlow(termAuth, auth.SendCodeOptions{}),
-		isTerminal: func(fd int) bool { return term.IsTerminal(fd) },
-		clock:      time.Now,
-		log:        slog.Default(),
-		runErr:     make(chan error, 1),
+		id:           uuid.NewString(),
+		tgRunner:     &prodRunner{Client: tgClient},
+		authFlow:     auth.NewFlow(termAuth, auth.SendCodeOptions{}),
+		isTerminal:   func(fd int) bool { return term.IsTerminal(fd) },
+		clock:        time.Now,
+		log:          slog.Default(),
+		runErr:       make(chan error, 1),
+		requestDelay: cfg.RequestDelay,
 	}
 
 	for _, opt := range opts {
@@ -275,6 +279,8 @@ func (c *Client) do(ctx context.Context, f func(ctx context.Context) error) erro
 		return err
 	}
 
+	c.applyRequestDelay(ctx)
+
 	// Предполагается, что c.Start() был вызван, и клиент работает в фоновом режиме.
 	// Просто выполняем запрошенную операцию.
 	opErr := f(ctx)
@@ -309,6 +315,33 @@ func (c *Client) checkHealthStatus() error {
 	}
 
 	return nil
+}
+
+// applyRequestDelay обеспечивает задержку между запросами.
+func (c *Client) applyRequestDelay(ctx context.Context) {
+	if c.requestDelay <= 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.lastRequest.IsZero() {
+		elapsed := c.clock().Sub(c.lastRequest)
+		if elapsed < c.requestDelay {
+			sleepDuration := c.requestDelay - elapsed
+			c.log.DebugContext(ctx, "Applying request delay", "duration", sleepDuration)
+			// Используем таймер, чтобы уважать отмену контекста
+			timer := time.NewTimer(sleepDuration)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+			}
+		}
+	}
+
+	c.lastRequest = c.clock()
 }
 
 // handleError обрабатывает ошибки, ищет FLOOD_WAIT и обновляет состояние клиента.

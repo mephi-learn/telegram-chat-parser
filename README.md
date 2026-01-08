@@ -70,6 +70,7 @@
 | `telegram_api.servers[].api_hash`| `API_HASH` | **(Обязательно)** API Hash аккаунта. | - |
 | `telegram_api.servers[].phone_number` | `PHONE_NUMBER` | **(Обязательно)** Номер телефона аккаунта. | - |
 | `telegram_api.servers[].session_file` | `SESSION_FILE` | Файл для хранения сессии Telegram. | `"tg.session"` |
+| `telegram_api.servers[].request_delay` | - | Задержка между запросами для одного клиента. Помогает избежать `FLOOD_WAIT`. | `0s` |
 | `telegram_api.health_check_interval` | `HEALTH_CHECK_INTERVAL` | Интервал проверки работоспособности Telegram-клиентов. | `30s` |
 | `processing.task_timeout`| `TASK_TIMEOUT` | Таймаут на обработку одной задачи (0 - без таймаута). | `30s` |
 | `processing.cache_ttl` | `CACHE_TTL` | Время жизни (TTL) для задачи и ее кэшированного результата. | `60m` |
@@ -86,6 +87,7 @@ telegram_api:
       api_hash: "hash_one"
       phone_number: "+11111111111"
       session_file: "tg1.session"
+      request_delay: "500ms"
     - api_id: 87654321
       api_hash: "hash_two"
       phone_number: "+22222222222"

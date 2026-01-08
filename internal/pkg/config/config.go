@@ -24,10 +24,11 @@ type Server struct {
 
 // TelegramAPIServer содержит конфигурацию одного сервера Telegram API
 type TelegramAPIServer struct {
-	APIID       int    `yaml:"api_id"`
-	APIHash     string `yaml:"api_hash"`
-	PhoneNumber string `yaml:"phone_number"`
-	SessionFile string `yaml:"session_file"`
+	APIID        int           `yaml:"api_id"`
+	APIHash      string        `yaml:"api_hash"`
+	PhoneNumber  string        `yaml:"phone_number"`
+	SessionFile  string        `yaml:"session_file"`
+	RequestDelay time.Duration `yaml:"request_delay"`
 }
 
 // TelegramAPI содержит конфигурацию Telegram API

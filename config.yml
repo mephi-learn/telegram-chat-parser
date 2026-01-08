@@ -27,6 +27,9 @@ telegram_api:
       api_hash: "7c910353fe312ff9a0604812a4e35eae"
       phone_number: "+13082951338"
       session_file: "tg.session"
+      # Задержка между запросами для одного клиента. 0 - без задержки.
+      # Рекомендуемое значение для избежания флуда: 500ms.
+      request_delay: "500ms"
 
 # Конфигурация обработки задач
 processing:

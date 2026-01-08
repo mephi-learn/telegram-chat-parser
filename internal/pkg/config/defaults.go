@@ -19,7 +19,8 @@ const (
 	DefaultCacheTTL    = 60 * time.Minute
 
 	// Telegram API defaults
-	DefaultHealthCheckInterval = 30 * time.Second
+	DefaultHealthCheckInterval  = 30 * time.Second
+	DefaultTelegramRequestDelay = 0 * time.Second
 
 	// Enrichment defaults
 	DefaultEnrichmentPoolSize         = 1
