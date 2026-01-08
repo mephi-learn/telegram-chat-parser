@@ -7,12 +7,21 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+// ColumnWidths определяет ширину колонок для текстового вывода.
+type ColumnWidths struct {
+	User    int `yaml:"user"`
+	Name    int `yaml:"name"`
+	Bio     int `yaml:"bio"`
+	Channel int `yaml:"channel"`
+}
+
 // BotConfig содержит конфигурацию для Telegram-бота
 type BotConfig struct {
-	Token                  string `yaml:"token"`
-	BackendURL             string `yaml:"backend_url"`
-	PollingIntervalSeconds int    `yaml:"polling_interval_seconds"`
-	ExcelThreshold         int    `yaml:"excel_threshold"`
+	Token                  string       `yaml:"token"`
+	BackendURL             string       `yaml:"backend_url"`
+	PollingIntervalSeconds int          `yaml:"polling_interval_seconds"`
+	ExcelThreshold         int          `yaml:"excel_threshold"`
+	Render                 ColumnWidths `yaml:"render"`
 }
 
 // Config является оберткой для соответствия структуре YAML файла.
@@ -32,7 +41,22 @@ func LoadBotConfig(filename string) (*BotConfig, error) {
 		return nil, fmt.Errorf("failed to unmarshal bot config: %w", err)
 	}
 
-	return &cfg.Bot, nil
+	// Устанавливаем значения по умолчанию
+	botCfg := &cfg.Bot
+	if botCfg.Render.User == 0 {
+		botCfg.Render.User = DefaultUserColumnWidth
+	}
+	if botCfg.Render.Name == 0 {
+		botCfg.Render.Name = DefaultNameColumnWidth
+	}
+	if botCfg.Render.Bio == 0 {
+		botCfg.Render.Bio = DefaultBioColumnWidth
+	}
+	if botCfg.Render.Channel == 0 {
+		botCfg.Render.Channel = DefaultChannelColumnWidth
+	}
+
+	return botCfg, nil
 }
 
 // Validate проверяет корректность конфигурации бота.

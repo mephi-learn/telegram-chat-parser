@@ -276,6 +276,11 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO) {
 
 	// Заголовки
 	headers := []string{"Дата экспорта", "Username", "Имя и фамилия", "Описание (Bio)"}
+	showChannel := hasChannelData(users)
+	if showChannel {
+		headers = append(headers, "Канал")
+	}
+
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue(sheetName, cell, h)
@@ -289,6 +294,9 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO) {
 		f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), user.Username)
 		f.SetCellValue(sheetName, fmt.Sprintf("C%d", row), user.Name)
 		f.SetCellValue(sheetName, fmt.Sprintf("D%d", row), user.Bio)
+		if showChannel {
+			f.SetCellValue(sheetName, fmt.Sprintf("E%d", row), user.Channel)
+		}
 	}
 
 	// Запись в буфер
@@ -323,27 +331,42 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO) {
 	sb.WriteString(fmt.Sprintf("Найдено %d участников. Вот список:\n", len(users)))
 	sb.WriteString("<pre><code>") // Используем HTML для надежного форматирования
 
-	// Задаем ширину колонок в визуальных единицах
-	userColWidth := 20
-	nameColWidth := 25
-	bioColWidth := 30
+	// Получаем ширину колонок из конфигурации
+	userColWidth := b.cfg.Render.User
+	nameColWidth := b.cfg.Render.Name
+	bioColWidth := b.cfg.Render.Bio
+	channelColWidth := b.cfg.Render.Channel
+
+	showChannel := hasChannelData(users)
 
 	// Формируем заголовок
 	headerUser := "Username"
 	headerName := "Name"
 	headerBio := "Bio"
-	sb.WriteString(fmt.Sprintf("| %s%s | %s%s | %s%s |\n",
+	headerChannel := "Channel"
+
+	headerLine := fmt.Sprintf("| %s%s | %s%s | %s%s ",
 		headerUser, strings.Repeat(" ", userColWidth-len(headerUser)),
 		headerName, strings.Repeat(" ", nameColWidth-len(headerName)),
 		headerBio, strings.Repeat(" ", bioColWidth-len(headerBio)),
-	))
+	)
+	if showChannel {
+		headerLine += fmt.Sprintf("| %s%s ", headerChannel, strings.Repeat(" ", channelColWidth-len(headerChannel)))
+	}
+	headerLine += "|\n"
+	sb.WriteString(headerLine)
 
 	// Формируем разделитель
-	sb.WriteString(fmt.Sprintf("|%s|%s|%s|\n",
+	separatorLine := fmt.Sprintf("|%s|%s|%s",
 		strings.Repeat("-", userColWidth+2),
 		strings.Repeat("-", nameColWidth+2),
 		strings.Repeat("-", bioColWidth+2),
-	))
+	)
+	if showChannel {
+		separatorLine += fmt.Sprintf("|%s", strings.Repeat("-", channelColWidth+2))
+	}
+	separatorLine += "|\n"
+	sb.WriteString(separatorLine)
 
 	for _, user := range users {
 		username := "n/a"
@@ -365,6 +388,13 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO) {
 		usernameLines := wrapString(username, userColWidth)
 		nameLines := wrapString(name, nameColWidth)
 		bioLines := wrapString(bio, bioColWidth)
+		var channelLines []string
+		if showChannel {
+			cleanChannel := strings.ToValidUTF8(user.Channel, "")
+			channel := html.EscapeString(cleanChannel)
+			channel = strings.ReplaceAll(channel, "\n", " ")
+			channelLines = wrapString(channel, channelColWidth)
+		}
 
 		maxLines := len(usernameLines)
 		if len(nameLines) > maxLines {
@@ -372,6 +402,9 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO) {
 		}
 		if len(bioLines) > maxLines {
 			maxLines = len(bioLines)
+		}
+		if len(channelLines) > maxLines {
+			maxLines = len(channelLines)
 		}
 
 		// 4. Печатаем строки для текущего пользователя
@@ -391,12 +424,23 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO) {
 				bioPart = bioLines[i]
 			}
 
+			channelPart := ""
+			if i < len(channelLines) {
+				channelPart = channelLines[i]
+			}
+
 			// Добиваем пробелами до нужной ширины
 			padUser := generatePadding(userPart, userColWidth)
 			padName := generatePadding(namePart, nameColWidth)
 			padBio := generatePadding(bioPart, bioColWidth)
 
-			sb.WriteString(fmt.Sprintf("| %s%s | %s%s | %s%s |\n", userPart, padUser, namePart, padName, bioPart, padBio))
+			line := fmt.Sprintf("| %s%s | %s%s | %s%s ", userPart, padUser, namePart, padName, bioPart, padBio)
+			if showChannel {
+				padChannel := generatePadding(channelPart, channelColWidth)
+				line += fmt.Sprintf("| %s%s ", channelPart, padChannel)
+			}
+			line += "|\n"
+			sb.WriteString(line)
 		}
 	}
 	sb.WriteString("</code></pre>")
@@ -523,14 +567,41 @@ func wrapString(s string, width int) []string {
 	return lines
 }
 
+// hasChannelData проверяет, есть ли в срезе пользователей хотя бы одна запись с непустым полем Channel.
+func hasChannelData(users []UserDTO) bool {
+	for _, user := range users {
+		if user.Channel != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // sendResultAsTextFile отправляет список пользователей в виде текстового файла.
 func (b *Bot) sendResultAsTextFile(chatID int64, users []UserDTO) {
 	var buf bytes.Buffer
+	showChannel := hasChannelData(users)
+
 	// Заголовки для файла
-	buf.WriteString("Username,Name,Bio\n")
+	headers := []string{"Username", "Name", "Bio"}
+	if showChannel {
+		headers = append(headers, "Channel")
+	}
+	buf.WriteString(strings.Join(headers, ","))
+	buf.WriteString("\n")
+
 	for _, user := range users {
 		// Форматируем как CSV для простоты
-		buf.WriteString(fmt.Sprintf("\"@%s\",\"%s\",\"%s\"\n", user.Username, strings.ReplaceAll(user.Name, "\"", "\"\""), strings.ReplaceAll(user.Bio, "\"", "\"\"")))
+		record := []string{
+			fmt.Sprintf("\"@%s\"", user.Username),
+			fmt.Sprintf("\"%s\"", strings.ReplaceAll(user.Name, "\"", "\"\"")),
+			fmt.Sprintf("\"%s\"", strings.ReplaceAll(user.Bio, "\"", "\"\"")),
+		}
+		if showChannel {
+			record = append(record, fmt.Sprintf("\"%s\"", strings.ReplaceAll(user.Channel, "\"", "\"\"")))
+		}
+		buf.WriteString(strings.Join(record, ","))
+		buf.WriteString("\n")
 	}
 
 	fileName := fmt.Sprintf("chat_participants_%s.txt", time.Now().Format("2006-01-02_15-04-05"))

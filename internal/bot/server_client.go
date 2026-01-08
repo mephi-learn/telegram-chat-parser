@@ -52,6 +52,7 @@ type UserDTO struct {
 	Name     string `json:"name"`
 	Username string `json:"username"`
 	Bio      string `json:"bio"`
+	Channel  string `json:"channel,omitempty"`
 }
 
 type TaskResultResponse struct {
