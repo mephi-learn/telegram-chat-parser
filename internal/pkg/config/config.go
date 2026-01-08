@@ -39,7 +39,6 @@ type TelegramAPI struct {
 // Processing содержит конфигурацию обработки
 type Processing struct {
 	TaskTimeout time.Duration `yaml:"task_timeout"` // 0 - без ограничений
-	TaskTTL     time.Duration `yaml:"task_ttl"`
 	CacheTTL    time.Duration `yaml:"cache_ttl"`
 }
 
@@ -120,7 +119,6 @@ func defaultConfig() *Config {
 		},
 		Processing: Processing{
 			TaskTimeout: DefaultTaskTimeout,
-			TaskTTL:     DefaultTaskTTL,
 			CacheTTL:    DefaultCacheTTL,
 		},
 		Enrichment: Enrichment{

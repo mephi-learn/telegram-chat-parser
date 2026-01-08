@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,7 +15,7 @@ const multiServerYAML = `
 server:
   host: "127.0.0.1"
   port: 8081
-  shutdown_timeout_seconds: 15
+  shutdown_timeout: 15s
 telegram_api:
   servers:
     - api_id: 12345
@@ -25,13 +26,13 @@ telegram_api:
       api_hash: "hash2"
       phone_number: "+222"
       session_file: "tg2.session"
-  health_check_interval_seconds: 60
+  health_check_interval: 60s
 processing:
-  task_timeout_seconds: 120
-  cache_ttl_minutes: 30
+  task_timeout: 120s
+  cache_ttl: 30m
 enrichment:
   pool_size: 5
-  client_retry_pause_seconds: 10
+  client_retry_pause: 10s
 logging:
   level: "info"
 `
@@ -69,13 +70,14 @@ func createTempConfigFile(t *testing.T, content string) string {
 func TestLoadFromYAML(t *testing.T) {
 	t.Run("success with multi-server format", func(t *testing.T) {
 		path := createTempConfigFile(t, multiServerYAML)
-		cfg, err := loadFromYAML(path)
+		cfg := defaultConfig()
+		err := loadFromYAML(path, cfg)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
 		assert.Equal(t, "127.0.0.1", cfg.Server.Host)
 		assert.Equal(t, 8081, cfg.Server.Port)
-		assert.Equal(t, 15, cfg.Server.ShutdownTimeoutSeconds)
+		assert.Equal(t, 15*time.Second, cfg.Server.ShutdownTimeout)
 		assert.Equal(t, "127.0.0.1:8081", cfg.Address())
 
 		require.Len(t, cfg.TelegramAPI.Servers, 2)
@@ -83,30 +85,33 @@ func TestLoadFromYAML(t *testing.T) {
 		assert.Equal(t, "hash1", cfg.TelegramAPI.Servers[0].APIHash)
 		assert.Equal(t, 67890, cfg.TelegramAPI.Servers[1].APIID)
 		assert.Equal(t, "hash2", cfg.TelegramAPI.Servers[1].APIHash)
-		assert.Equal(t, 60, cfg.TelegramAPI.HealthCheckIntervalSeconds)
+		assert.Equal(t, 60*time.Second, cfg.TelegramAPI.HealthCheckInterval)
 
-		assert.Equal(t, 120, cfg.Processing.TaskTimeoutSeconds)
-		assert.Equal(t, 30, cfg.Processing.CacheTTLMinutes)
+		assert.Equal(t, 120*time.Second, cfg.Processing.TaskTimeout)
+		assert.Equal(t, 30*time.Minute, cfg.Processing.CacheTTL)
 		assert.Equal(t, 5, cfg.Enrichment.PoolSize)
-		assert.Equal(t, 10, cfg.Enrichment.ClientRetryPauseSeconds)
+		assert.Equal(t, 10*time.Second, cfg.Enrichment.ClientRetryPause)
 		assert.Equal(t, "info", cfg.Logging.Level)
 	})
 
-	t.Run("file not found", func(t *testing.T) {
-		_, err := loadFromYAML("non_existent_file.yml")
-		assert.Error(t, err)
+	t.Run("file not found is not an error", func(t *testing.T) {
+		cfg := defaultConfig()
+		err := loadFromYAML("non_existent_file.yml", cfg)
+		assert.NoError(t, err)
 	})
 
 	t.Run("invalid yaml", func(t *testing.T) {
 		path := createTempConfigFile(t, "invalid yaml: {")
-		_, err := loadFromYAML(path)
+		cfg := defaultConfig()
+		err := loadFromYAML(path, cfg)
 		assert.Error(t, err)
 	})
 }
 
 func TestGetTelegramServers(t *testing.T) {
 	t.Run("from modern config", func(t *testing.T) {
-		cfg, err := loadFromYAML(createTempConfigFile(t, multiServerYAML))
+		cfg := defaultConfig()
+		err := loadFromYAML(createTempConfigFile(t, multiServerYAML), cfg)
 		require.NoError(t, err)
 		servers := cfg.GetTelegramServers()
 		require.Len(t, servers, 2)
@@ -123,7 +128,8 @@ func TestGetTelegramServers(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	validConfig := func(t *testing.T) *Config {
-		cfg, err := loadFromYAML(createTempConfigFile(t, multiServerYAML))
+		cfg := defaultConfig()
+		err := loadFromYAML(createTempConfigFile(t, multiServerYAML), cfg)
 		require.NoError(t, err)
 		return cfg
 	}
@@ -139,12 +145,12 @@ func TestValidate(t *testing.T) {
 		{"empty server api_hash", func(c *Config) { c.TelegramAPI.Servers[0].APIHash = "" }, true},
 		{"empty server phone", func(c *Config) { c.TelegramAPI.Servers[0].PhoneNumber = "" }, true},
 		{"invalid port", func(c *Config) { c.Server.Port = 0 }, true},
-		{"invalid shutdown timeout", func(c *Config) { c.Server.ShutdownTimeoutSeconds = 0 }, true},
-		{"invalid task_timeout", func(c *Config) { c.Processing.TaskTimeoutSeconds = -1 }, true},
-		{"invalid cache_ttl", func(c *Config) { c.Processing.CacheTTLMinutes = 0 }, true},
-		{"invalid health_check", func(c *Config) { c.TelegramAPI.HealthCheckIntervalSeconds = 0 }, true},
+		{"invalid shutdown timeout", func(c *Config) { c.Server.ShutdownTimeout = 0 }, true},
+		{"invalid task_timeout", func(c *Config) { c.Processing.TaskTimeout = -1 }, true},
+		{"invalid cache_ttl", func(c *Config) { c.Processing.CacheTTL = 0 }, true},
+		{"invalid health_check", func(c *Config) { c.TelegramAPI.HealthCheckInterval = 0 }, true},
 		{"invalid pool_size", func(c *Config) { c.Enrichment.PoolSize = 0 }, true},
-		{"invalid retry_pause", func(c *Config) { c.Enrichment.ClientRetryPauseSeconds = 0 }, true},
+		{"invalid retry_pause", func(c *Config) { c.Enrichment.ClientRetryPause = 0 }, true},
 		{"invalid logging level", func(c *Config) { c.Logging.Level = "wrong" }, true},
 	}
 

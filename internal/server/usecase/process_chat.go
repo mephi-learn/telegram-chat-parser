@@ -9,7 +9,6 @@ import (
 	"telegram-chat-parser/internal/domain"
 	"telegram-chat-parser/internal/pkg/config"
 	"telegram-chat-parser/internal/ports"
-	"time"
 )
 
 // ProcessChatUseCase инкапсулирует бизнес-логику для обработки файла экспорта чата.
@@ -87,9 +86,9 @@ func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePath string) 
 	}
 
 	// 5. Сохранение результата в кеше
-	ttl := time.Duration(uc.cfg.Processing.CacheTTLMinutes) * time.Minute
+	ttl := uc.cfg.Processing.CacheTTL
 	uc.cacheStore.Put(fileHash, finalUsers, ttl)
-	slog.Info("Результат кеширован для файла", "hash", fileHash, "ttl_minutes", ttl.Minutes())
+	slog.Info("Результат кеширован для файла", "hash", fileHash, "ttl", ttl.String())
 
 	slog.Info("Обработка успешно завершена", "user_count", len(finalUsers))
 	slog.Info("Окончательный список обогащенных пользователей", "users", finalUsers)

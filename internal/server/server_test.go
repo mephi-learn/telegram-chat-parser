@@ -36,7 +36,14 @@ func (m *mockProcessor) ProcessChat(ctx context.Context, filePath string) ([]dom
 
 func TestServer(t *testing.T) {
 	cfg := &config.Config{
-		Server: config.Server{Host: "localhost", Port: 8080},
+		Server: config.Server{
+			Host:            "localhost",
+			Port:            8080,
+			CleanupInterval: 1 * time.Minute, // Устанавливаем ненулевое значение
+		},
+		Processing: config.Processing{
+			CacheTTL: 1 * time.Minute, // Устанавливаем ненулевое значение
+		},
 	}
 	mockProc := new(mockProcessor)
 	taskStore := NewTaskStore()

@@ -62,17 +62,17 @@
 | :--- | :--- | :--- | :--- |
 | `server.host` | `SERVER_HOST` | Хост, на котором запускается сервер. | `"0.0.0.0"` |
 | `server.port` | `SERVER_PORT` | Порт сервера. | `8080` |
-| `server.shutdown_timeout_seconds` | `SHUTDOWN_TIMEOUT_SECONDS` | Таймаут на корректное завершение работы сервера. | `10` |
+| `server.shutdown_timeout` | `SHUTDOWN_TIMEOUT` | Таймаут на корректное завершение работы сервера. | `15s` |
 | `telegram_api.servers` | - | **(Обязательно)** Список конфигураций для каждого Telegram-аккаунта. | - |
 | `telegram_api.servers[].api_id` | `API_ID` | **(Обязательно)** API ID аккаунта. | - |
 | `telegram_api.servers[].api_hash`| `API_HASH` | **(Обязательно)** API Hash аккаунта. | - |
 | `telegram_api.servers[].phone_number` | `PHONE_NUMBER` | **(Обязательно)** Номер телефона аккаунта. | - |
 | `telegram_api.servers[].session_file` | `SESSION_FILE` | Файл для хранения сессии Telegram. | `"tg.session"` |
-| `telegram_api.health_check_interval_seconds` | `HEALTH_CHECK_INTERVAL_SECONDS` | Интервал проверки работоспособности Telegram-клиентов. | `30` |
-| `processing.task_timeout_seconds`| `TASK_TIMEOUT_SECONDS` | Таймаут на обработку одной задачи (0 - без таймаута). | `30` |
-| `processing.cache_ttl_minutes` | `CACHE_TTL_MINUTES` | Время жизни (TTL) для кэшированных результатов в минутах. | `60` |
+| `telegram_api.health_check_interval` | `HEALTH_CHECK_INTERVAL` | Интервал проверки работоспособности Telegram-клиентов. | `30s` |
+| `processing.task_timeout`| `TASK_TIMEOUT` | Таймаут на обработку одной задачи (0 - без таймаута). | `30s` |
+| `processing.cache_ttl` | `CACHE_TTL` | Время жизни (TTL) для задачи и ее кэшированного результата. | `60m` |
 | `enrichment.pool_size` | `ENRICHMENT_POOL_SIZE` | Количество воркеров для одновременного обогащения данных. | `1` |
-| `enrichment.client_retry_pause_seconds` | `CLIENT_RETRY_PAUSE_SECONDS`| Пауза перед повторной попыткой получить клиента из роутера, если все заняты. | `1` |
+| `enrichment.client_retry_pause` | `CLIENT_RETRY_PAUSE`| Пауза перед повторной попыткой получить клиента из роутера, если все заняты. | `1s` |
 | `logging.level` | `LOGGING_LEVEL` | Уровень логирования (`debug`, `info`, `warn`, `error`). | `"info"` |
 
 **Пример конфигурации `telegram_api.servers`:**

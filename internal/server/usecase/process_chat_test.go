@@ -57,7 +57,7 @@ func createTempFile(t *testing.T, content string) string {
 
 func TestProcessChatUseCase(t *testing.T) {
 	ctx := context.Background()
-	cfg := &config.Config{Processing: config.Processing{CacheTTLMinutes: 10}}
+	cfg := &config.Config{Processing: config.Processing{CacheTTL: 10 * time.Minute}}
 
 	// Create a dummy file for hash calculation
 	filePath := createTempFile(t, "{}")

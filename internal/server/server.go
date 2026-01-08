@@ -106,7 +106,7 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 			}
 
 			// Создание задачи в хранилище
-			taskStore.CreateTask(taskID, cfg.Processing.TaskTTL)
+			taskStore.CreateTask(taskID, cfg.Processing.CacheTTL)
 
 			// Запуск обработки в горутине
 			go func() {
@@ -163,7 +163,7 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 			taskID := uuid.NewString()
 
 			// Создание задачи в хранилище
-			taskStore.CreateTask(taskID, cfg.Processing.TaskTTL)
+			taskStore.CreateTask(taskID, cfg.Processing.CacheTTL)
 
 			// Запуск обработки в горутине
 			go func() {

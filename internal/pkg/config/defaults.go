@@ -15,8 +15,7 @@ const (
 	DefaultCleanupInterval = 1 * time.Hour
 
 	// Processing defaults
-	DefaultTaskTimeout = 30 * time.Second
-	DefaultTaskTTL     = 24 * time.Hour
+	DefaultTaskTimeout = 600 * time.Second
 	DefaultCacheTTL    = 60 * time.Minute
 
 	// Telegram API defaults

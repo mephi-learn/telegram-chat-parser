@@ -22,7 +22,7 @@ var ErrParticipantNotResolved = errors.New("participant not resolvable")
 
 // channelRegexp — это скомпилированное регулярное выражение для поиска упоминаний каналов в bio пользователя.
 // Оно ищет шаблоны вида @channelname или t.me/channelname.
-var channelRegexp = regexp.MustCompile(`(?:@|t\.me/)([a-zA-Z0-9_]{5,})`)
+var channelRegexp = regexp.MustCompile(`(?:@|t\.me/)([a-zA-Z0-9_]+)`)
 
 // extractChannelFromBio парсит bio пользователя для поиска потенциального упоминания канала.
 // Возвращает имя канала, если оно найдено, в противном случае — пустую строку.

@@ -65,25 +65,12 @@ func (m *mockRouter) GetClient(ctx context.Context) (ports.TelegramClient, error
 
 func (m *mockRouter) Stop() {}
 
-func getDefaultConfig() Config {
-	return Config{
-		TotalTimeout:     5 * time.Second,
-		OperationTimeout: 1 * time.Second,
-		PoolSize:         1,
-		ClientRetryPause: 10 * time.Millisecond,
-	}
-}
-
 func TestEnrichmentService_Enrich_Success(t *testing.T) {
 	router := new(mockRouter)
 	client := new(mockClient)
-	cfg := getDefaultConfig()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service := NewEnrichmentService(router,
-		WithTotalTimeout(cfg.TotalTimeout),
-		WithOperationTimeout(cfg.OperationTimeout),
-		WithPoolSize(cfg.PoolSize),
-		WithClientRetryPause(cfg.ClientRetryPause),
+		1, 10*time.Millisecond, 1*time.Second,
 		WithLogger(logger),
 	)
 
@@ -113,7 +100,7 @@ func TestEnrichmentService_Enrich_RequeueOnFailure(t *testing.T) {
 	router := new(mockRouter)
 	client1, client2 := new(mockClient), new(mockClient)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	service := NewEnrichmentService(router, WithTotalTimeout(1*time.Second), WithLogger(logger))
+	service := NewEnrichmentService(router, 1, 10*time.Millisecond, 1*time.Second, WithLogger(logger))
 
 	participant := domain.RawParticipant{Username: "testuser"}
 	tgUser := &tg.User{ID: 1, Username: "testuser", FirstName: "Test"}
@@ -148,7 +135,7 @@ func TestEnrichmentService_Enrich_RetryOnGetClientError(t *testing.T) {
 	router := new(mockRouter)
 	client := new(mockClient)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	service := NewEnrichmentService(router, WithLogger(logger))
+	service := NewEnrichmentService(router, 1, 10*time.Millisecond, 1*time.Second, WithLogger(logger))
 
 	participant := domain.RawParticipant{Username: "testuser"}
 	tgUser := &tg.User{ID: 1, Username: "testuser", FirstName: "Test"}
@@ -175,13 +162,9 @@ func TestEnrichmentService_Enrich_RetryOnGetClientError(t *testing.T) {
 func TestEnrichmentService_Enrich_TotalTimeout(t *testing.T) {
 	router := new(mockRouter)
 	client := new(mockClient)
-	cfg := getDefaultConfig()
-	cfg.TotalTimeout = 50 * time.Millisecond
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service := NewEnrichmentService(router,
-		WithTotalTimeout(cfg.TotalTimeout),
-		WithClientRetryPause(100*time.Millisecond),
-		WithPoolSize(2),
+		2, 100*time.Millisecond, 1*time.Second,
 		WithLogger(logger),
 	)
 
@@ -203,10 +186,12 @@ func TestEnrichmentService_Enrich_TotalTimeout(t *testing.T) {
 		Return(nil, context.DeadlineExceeded).
 		After(150 * time.Millisecond) // Вернули задержку
 
-	users, err := service.Enrich(context.Background(), []domain.RawParticipant{p1, p2})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	users, err := service.Enrich(ctx, []domain.RawParticipant{p1, p2})
 
 	assert.Error(t, err)
-	assert.ErrorContains(t, err, "enrichment process timed out")
+	assert.ErrorIs(t, err, context.DeadlineExceeded, "Ожидалась ошибка истечения времени ожидания контекста")
 	assert.Len(t, users, 1, "Должен вернуть частично обработанных пользователей")
 	assert.Equal(t, int64(1), users[0].ID)
 }
@@ -215,7 +200,7 @@ func TestEnrichmentService_Enrich_ParallelProcessing(t *testing.T) {
 	router := new(mockRouter)
 	client := new(mockClient)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	service := NewEnrichmentService(router, WithLogger(logger))
+	service := NewEnrichmentService(router, 2, 10*time.Millisecond, 1*time.Second, WithLogger(logger))
 
 	participants := []domain.RawParticipant{
 		{Username: "user1"},
@@ -272,7 +257,7 @@ func TestEnrichmentService_Enrich_ParallelProcessing(t *testing.T) {
 func TestEnrichmentService_Enrich_NoUsernameOrID(t *testing.T) {
 	router := new(mockRouter)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	service := NewEnrichmentService(router, WithLogger(logger))
+	service := NewEnrichmentService(router, 1, 10*time.Millisecond, 1*time.Second, WithLogger(logger))
 
 	participant := domain.RawParticipant{Name: "Nameless User"}
 	users, err := service.Enrich(context.Background(), []domain.RawParticipant{participant})
@@ -288,7 +273,7 @@ func TestEnrichmentService_Enrich_Deduplication(t *testing.T) {
 	router := new(mockRouter)
 	client := new(mockClient)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	service := NewEnrichmentService(router, WithLogger(logger), WithPoolSize(2))
+	service := NewEnrichmentService(router, 2, 10*time.Millisecond, 1*time.Second, WithLogger(logger))
 
 	// --- Определяем участников и ожидаемые вызовы API ---
 
@@ -410,7 +395,7 @@ func TestExtractChannelFromBio(t *testing.T) {
 		{
 			name:        "Bio with short username",
 			bio:         "My channel is @short",
-			wantChannel: "",
+			wantChannel: "short",
 		},
 		{
 			name:        "Bio with multiple mentions, first one is taken",
