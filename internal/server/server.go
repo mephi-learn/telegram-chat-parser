@@ -114,9 +114,16 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 				// Обновление статуса до "в обработке"
 				taskStore.UpdateTaskStatus(taskID, TaskStatusProcessing)
 
-				// Обработка чата
-				// Использование context.Background() для длительной задачи, чтобы избежать отмены из-за контекста HTTP-запроса.
-				result, err := processor.ProcessChat(context.Background(), tempFilePath)
+				// Создание контекста для задачи с таймаутом из конфигурации.
+				taskCtx := context.Background()
+				if cfg.Processing.TaskTimeoutSeconds > 0 {
+					var cancel context.CancelFunc
+					taskCtx, cancel = context.WithTimeout(context.Background(), time.Duration(cfg.Processing.TaskTimeoutSeconds)*time.Second)
+					defer cancel()
+				}
+
+				// Обработка чата с использованием контекста, который может иметь таймаут.
+				result, err := processor.ProcessChat(taskCtx, tempFilePath)
 				if err != nil {
 					taskStore.UpdateTaskError(taskID, err.Error())
 					// Очистка временного файла при ошибке
