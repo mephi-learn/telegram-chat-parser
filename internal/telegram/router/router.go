@@ -74,11 +74,12 @@ func WithLogger(l *slog.Logger) Option {
 
 // Router управляет пулом клиентов Telegram, их состоянием и выбором.
 type Router struct {
-	mu        sync.RWMutex
-	healthy   map[string]ports.TelegramClient
-	unhealthy map[string]ports.TelegramClient
-	strategy  ports.Strategy
-	log       *slog.Logger
+	mu                sync.RWMutex
+	healthy           map[string]ports.TelegramClient
+	unhealthy         map[string]ports.TelegramClient
+	scheduledRecovery map[string]struct{} // Отслеживает клиентов, для которых уже запланировано восстановление.
+	strategy          ports.Strategy
+	log               *slog.Logger
 
 	clients             []ports.TelegramClient // Начальный список клиентов, созданный из конфигов
 	healthCheckInterval time.Duration
@@ -93,6 +94,7 @@ func NewRouter(ctx context.Context, opts ...Option) (*Router, error) {
 	r := &Router{
 		healthy:             make(map[string]ports.TelegramClient),
 		unhealthy:           make(map[string]ports.TelegramClient),
+		scheduledRecovery:   make(map[string]struct{}),
 		strategy:            NewRoundRobinStrategy(),
 		healthCheckInterval: 30 * time.Second, // Значение по умолчанию
 		done:                make(chan struct{}),
@@ -236,30 +238,75 @@ func (r *Router) checkUnhealthyClients() {
 	}
 }
 
-// forceHealthCheck выполняет принудительную проверку здоровья клиента.
-// Если клиент нездоров, он перемещается в пул неработоспособных.
-func (r *Router) forceHealthCheck(client ports.TelegramClient) {
-	r.log.Debug("Принудительная проверка работоспособности клиента", "client_id", client.ID())
-	if err := client.Health(context.Background()); err != nil {
-		r.log.Warn(
-			"Клиент не прошел принудительную проверку работоспособности после ошибки, перемещение в пул неработоспособных",
-			"client_id", client.ID(),
-			"reason", err,
-		)
-		r.setClientUnhealthy(client.ID())
+// handleClientError обрабатывает ошибку, полученную от клиента.
+// Он перемещает клиента в пул нездоровых и, если это возможно,
+// планирует проактивное восстановление.
+func (r *Router) handleClientError(client ports.TelegramClient, err error) {
+	clientID := client.ID()
+	r.log.Warn("Client returned an error, processing...", "client_id", clientID, "error", err)
+
+	// Перемещаем клиента в нездоровый пул.
+	r.setClientUnhealthy(client)
+
+	// Проверяем, нужно ли планировать проактивное восстановление.
+	recoveryTime := client.GetRecoveryTime()
+	now := time.Now() // Для тестов здесь можно использовать мок времени.
+
+	if recoveryTime.IsZero() || now.After(recoveryTime) {
+		return // Нет времени восстановления или оно уже в прошлом.
+	}
+
+	r.mu.Lock()
+	if _, exists := r.scheduledRecovery[clientID]; exists {
+		r.mu.Unlock()
+		r.log.Debug("Proactive recovery already scheduled for client", "client_id", clientID)
+		return
+	}
+
+	// Помечаем, что восстановление запланировано.
+	r.scheduledRecovery[clientID] = struct{}{}
+	delay := time.Until(recoveryTime)
+	r.mu.Unlock()
+
+	r.log.Info("Scheduling proactive recovery for client", "client_id", clientID, "delay", delay)
+
+	// Запускаем проверку по истечении таймаута.
+	time.AfterFunc(delay, func() {
+		r.checkAndRecoverClient(clientID)
+	})
+}
+
+// checkAndRecoverClient выполняет проверку здоровья для одного клиента и восстанавливает его при успехе.
+// Эта функция вызывается как по таймеру проактивного восстановления, так и периодическим health check'ом.
+func (r *Router) checkAndRecoverClient(clientID string) {
+	r.mu.Lock()
+	// Сразу удаляем флаг запланированного восстановления.
+	delete(r.scheduledRecovery, clientID)
+	client, ok := r.unhealthy[clientID]
+	r.mu.Unlock()
+
+	if !ok {
+		r.log.Debug("Client to recover not found in unhealthy pool (already recovered?)", "client_id", clientID)
+		return
+	}
+
+	r.log.Debug("Running health check for client", "client_id", clientID)
+	if err := client.Health(context.Background()); err == nil {
+		r.log.Info("Client recovered, moving back to healthy pool", "client_id", clientID)
+		r.setClientHealthy(clientID)
 	} else {
-		r.log.Debug("Клиент прошел принудительную проверку работоспособности", "client_id", client.ID())
+		r.log.Warn("Recovery check failed, client remains unhealthy", "client_id", clientID, "reason", err)
 	}
 }
 
 // setClientUnhealthy перемещает клиента из пула здоровых в пул нездоровых.
-func (r *Router) setClientUnhealthy(id string) {
+func (r *Router) setClientUnhealthy(client ports.TelegramClient) {
+	id := client.ID()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	client, ok := r.healthy[id]
-	if !ok {
-		return // Клиент уже был перемещен.
+	if _, ok := r.healthy[id]; !ok {
+		return // Клиент уже не в пуле здоровых.
 	}
 
 	delete(r.healthy, id)
@@ -294,16 +341,6 @@ type clientWrapper struct {
 	router *Router
 }
 
-// handleError - внутренний метод для обработки ошибок.
-// Если ошибка есть, запускает принудительную проверку здоровья.
-func (w *clientWrapper) handleError(err error) {
-	if err != nil {
-		// Запускаем проверку в отдельной горутине, чтобы не блокировать
-		// вызывающий код.
-		go w.router.forceHealthCheck(w.TelegramClient)
-	}
-}
-
 // Переопределяем все методы интерфейса TelegramAPIRepositoryInterface,
 // добавляя к ним обработку ошибок.
 
@@ -311,9 +348,10 @@ func (w *clientWrapper) UsersGetUsers(ctx context.Context, request []tg.InputUse
 	w.router.log.DebugContext(ctx, "Calling UsersGetUsers via wrapper", "client_id", w.ID())
 	res, err := w.TelegramClient.UsersGetUsers(ctx, request)
 	if err != nil {
-		w.router.log.WarnContext(ctx, "UsersGetUsers call failed", "client_id", w.ID(), "error", err)
+		// Сообщаем роутеру об ошибке, чтобы он принял решение.
+		// Запускаем в горутине, чтобы не блокировать вызывающий код.
+		go w.router.handleClientError(w.TelegramClient, err)
 	}
-	w.handleError(err)
 	return res, err
 }
 
@@ -321,9 +359,8 @@ func (w *clientWrapper) ContactsResolveUsername(ctx context.Context, req *tg.Con
 	w.router.log.DebugContext(ctx, "Calling ContactsResolveUsername via wrapper", "client_id", w.ID(), "username", req.Username)
 	res, err := w.TelegramClient.ContactsResolveUsername(ctx, req)
 	if err != nil {
-		w.router.log.WarnContext(ctx, "ContactsResolveUsername call failed", "client_id", w.ID(), "username", req.Username, "error", err)
+		go w.router.handleClientError(w.TelegramClient, err)
 	}
-	w.handleError(err)
 	return res, err
 }
 
@@ -331,8 +368,7 @@ func (w *clientWrapper) UsersGetFullUser(ctx context.Context, inputUser tg.Input
 	w.router.log.DebugContext(ctx, "Calling UsersGetFullUser via wrapper", "client_id", w.ID())
 	res, err := w.TelegramClient.UsersGetFullUser(ctx, inputUser)
 	if err != nil {
-		w.router.log.WarnContext(ctx, "UsersGetFullUser call failed", "client_id", w.ID(), "error", err)
+		go w.router.handleClientError(w.TelegramClient, err)
 	}
-	w.handleError(err)
 	return res, err
 }

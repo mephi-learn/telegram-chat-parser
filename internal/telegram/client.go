@@ -308,7 +308,6 @@ func (c *Client) checkHealthStatus() error {
 		return err
 	}
 
-	c.log.Debug("Health check passed: client is not in flood wait")
 	return nil
 }
 

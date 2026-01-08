@@ -20,8 +20,9 @@ import (
 
 // mockClient - это мок-реализация интерфейса ports.TelegramClient для использования в тестах.
 type mockClient struct {
-	mockID string
-	mu     sync.RWMutex
+	mockID       string
+	mu           sync.RWMutex
+	recoveryTime time.Time
 	// healthErr симулирует состояние здоровья клиента.
 	healthErr error
 	// returnErr симулирует ошибку от API.
@@ -63,7 +64,15 @@ func (m *mockClient) setHealthy(isHealthy bool) {
 }
 
 func (m *mockClient) GetRecoveryTime() time.Time {
-	return time.Time{}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.recoveryTime
+}
+
+func (m *mockClient) setRecoveryTime(t time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recoveryTime = t
 }
 
 func (m *mockClient) setReturnError(err error) {
@@ -90,6 +99,7 @@ func newTestRouter(t *testing.T, clients []ports.TelegramClient, interval time.D
 	r := &Router{
 		healthy:             make(map[string]ports.TelegramClient),
 		unhealthy:           make(map[string]ports.TelegramClient),
+		scheduledRecovery:   make(map[string]struct{}),
 		strategy:            NewRoundRobinStrategy(),
 		healthCheckInterval: interval,
 		done:                make(chan struct{}),
@@ -165,9 +175,8 @@ func TestRouter_ClientFailsAndMovesToUnhealthy(t *testing.T) {
 	require.NoError(t, err)
 
 	client1.setReturnError(mockErr)
-	client1.setHealthy(false) // Симулируем, что проверка здоровья после ошибки провалилась.
 
-	// Вызываем метод API. Обертка должна перехватить ошибку и инициировать проверку.
+	// Вызываем метод API. Обертка должна перехватить ошибку и инициировать обработку.
 	_, apiErr := wrappedClient.UsersGetUsers(context.Background(), nil)
 	require.ErrorIs(t, apiErr, mockErr)
 
@@ -180,7 +189,6 @@ func TestRouter_ClientFailsAndMovesToUnhealthy(t *testing.T) {
 	require.Len(t, r.healthy, 0)
 	require.Len(t, r.unhealthy, 1)
 	require.Equal(t, client1, r.unhealthy["client-1"])
-	require.Error(t, client1.Health(context.Background()))
 }
 
 func TestRouter_ClientRecoversOnHealthCheck(t *testing.T) {
@@ -218,7 +226,7 @@ func TestRouter_AutomaticRecovery(t *testing.T) {
 	defer r.Stop()
 
 	// Перемещаем клиента в нездоровые вручную.
-	r.setClientUnhealthy("client-1")
+	r.setClientUnhealthy(client1)
 	require.Len(t, r.healthy, 0)
 	require.Len(t, r.unhealthy, 1)
 
@@ -298,11 +306,76 @@ func TestRouter_RaceCondition(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		r.setClientUnhealthy("c2")
+		// client c2 is at index 1
+		r.setClientUnhealthy(clients[1])
 		time.Sleep(5 * time.Millisecond)
 		r.setClientHealthy("c2")
 	}()
 
 	wg.Wait()
 	// Если тест запускается с флагом -race и не падает, значит, гонок нет.
+}
+
+func TestRouter_ProactiveRecoveryAfterFloodWait(t *testing.T) {
+	// 1. Настройка
+	client1 := newMockClient("proactive-client", true)
+	clients := []ports.TelegramClient{client1}
+
+	// Создаем роутер с очень большим интервалом health check, чтобы он нам не мешал.
+	r := newTestRouter(t, clients, 5*time.Minute)
+	defer r.Stop()
+
+	// 2. Симуляция ошибки FLOOD_WAIT
+	floodWaitDuration := 200 * time.Millisecond
+	// Ошибка, которую вернет клиент. Важно, чтобы она содержала текст "FLOOD_WAIT".
+	floodWaitErr := fmt.Errorf("rpc error: code = Canceled desc = FLOOD_WAIT (%d)", int(floodWaitDuration.Seconds()))
+	// Время, когда клиент "оживет".
+	recoveryTime := time.Now().Add(floodWaitDuration)
+
+	// Настраиваем мок-клиент
+	client1.setReturnError(floodWaitErr)
+	client1.setRecoveryTime(recoveryTime)
+
+	// Получаем обернутый клиент
+	wrappedClient, err := r.GetClient(context.Background())
+	require.NoError(t, err)
+
+	// 3. Вызов API, который приведет к ошибке
+	_, apiErr := wrappedClient.UsersGetUsers(context.Background(), nil)
+	require.Error(t, apiErr)
+
+	// 4. Проверка немедленного перемещения в unhealthy
+	// Даем горутине handleClientError немного времени на выполнение
+	time.Sleep(50 * time.Millisecond)
+
+	r.mu.RLock()
+	require.Len(t, r.healthy, 0, "Client should be moved to unhealthy pool immediately")
+	require.Len(t, r.unhealthy, 1, "Client should be in unhealthy pool")
+	_, scheduled := r.scheduledRecovery[client1.ID()]
+	require.True(t, scheduled, "Proactive recovery should be scheduled")
+	r.mu.RUnlock()
+
+	// 5. Симулируем, что клиент "ожил" и готов к работе
+	client1.setHealthy(true)
+	client1.setReturnError(nil) // Больше не возвращает ошибок
+
+	// 6. Проверка восстановления ТОЧНО по таймеру
+	// Ждем дольше, чем длительность flood wait
+	time.Sleep(floodWaitDuration) // Ждем оставшиеся ~150ms + запас
+
+	// Проверяем, что клиент вернулся в healthy пул
+	require.Eventually(t, func() bool {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		_, isHealthy := r.healthy[client1.ID()]
+		return isHealthy
+	}, 100*time.Millisecond, 10*time.Millisecond, "Client should be back in healthy pool after recovery time")
+
+	// Финальная проверка состояния
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	require.Len(t, r.healthy, 1)
+	require.Len(t, r.unhealthy, 0)
+	_, scheduled = r.scheduledRecovery[client1.ID()]
+	require.False(t, scheduled, "Recovery schedule should be cleared after execution")
 }

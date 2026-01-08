@@ -40,6 +40,20 @@ func NewProcessChatUseCase(
 // ProcessChat обрабатывает несколько файлов экспорта чата.
 // Он извлекает, разбирает, объединяет участников и затем обогащает их данные.
 func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePaths []string) ([]domain.User, error) {
+	taskTimeout := uc.cfg.Processing.TaskTimeout
+	slog.InfoContext(ctx, "Starting chat processing task", "configured_timeout", taskTimeout.String())
+
+	// Создаем новый контекст с таймаутом для всей задачи, если он задан.
+	// 0 означает отсутствие таймаута.
+	var taskCtx context.Context
+	var cancel context.CancelFunc
+	if taskTimeout > 0 {
+		taskCtx, cancel = context.WithTimeout(ctx, taskTimeout)
+	} else {
+		taskCtx, cancel = context.WithCancel(ctx)
+	}
+	defer cancel()
+
 	var allRawParticipants []domain.RawParticipant
 	var fileHashes []string
 
@@ -88,7 +102,7 @@ func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePaths []strin
 
 	// Обогащение объединенного списка участников
 	slog.Info("Обогащение данных через Telegram API...")
-	finalUsers, err := uc.enricher.Enrich(ctx, allRawParticipants)
+	finalUsers, err := uc.enricher.Enrich(taskCtx, allRawParticipants)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось обогатить данные: %w", err)
 	}

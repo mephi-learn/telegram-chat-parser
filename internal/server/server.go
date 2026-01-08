@@ -108,10 +108,8 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 
 				taskStore.UpdateTaskStatus(taskID, TaskStatusProcessing)
 
-				taskCtx, cancel := context.WithTimeout(context.Background(), cfg.Processing.TaskTimeout)
-				defer cancel()
-
-				result, err := processor.ProcessChat(taskCtx, paths)
+				// Передаем фоновый контекст; use case сам управляет своим таймаутом.
+				result, err := processor.ProcessChat(context.Background(), paths)
 				if err != nil {
 					taskStore.UpdateTaskError(taskID, err.Error())
 					return
