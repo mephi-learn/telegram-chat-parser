@@ -21,6 +21,8 @@ type BotConfig struct {
 	BackendURL             string       `yaml:"backend_url"`
 	PollingIntervalSeconds int          `yaml:"polling_interval_seconds"`
 	ExcelThreshold         int          `yaml:"excel_threshold"`
+	MaxFilesPerMessage     int          `yaml:"max_files_per_message"`
+	FileBatchTimeoutSecs   int          `yaml:"file_batch_timeout_seconds"`
 	Render                 ColumnWidths `yaml:"render"`
 }
 
@@ -43,6 +45,12 @@ func LoadBotConfig(filename string) (*BotConfig, error) {
 
 	// Устанавливаем значения по умолчанию
 	botCfg := &cfg.Bot
+	if botCfg.MaxFilesPerMessage == 0 {
+		botCfg.MaxFilesPerMessage = DefaultMaxFilesPerMessage
+	}
+	if botCfg.FileBatchTimeoutSecs == 0 {
+		botCfg.FileBatchTimeoutSecs = DefaultFileBatchTimeoutSecs
+	}
 	if botCfg.Render.User == 0 {
 		botCfg.Render.User = DefaultUserColumnWidth
 	}
@@ -72,6 +80,12 @@ func (c *BotConfig) Validate() error {
 	}
 	if c.ExcelThreshold <= 0 {
 		return fmt.Errorf("bot.excel_threshold must be positive")
+	}
+	if c.MaxFilesPerMessage <= 0 {
+		return fmt.Errorf("bot.max_files_per_message must be positive")
+	}
+	if c.FileBatchTimeoutSecs <= 0 {
+		return fmt.Errorf("bot.file_batch_timeout_seconds must be positive")
 	}
 	return nil
 }

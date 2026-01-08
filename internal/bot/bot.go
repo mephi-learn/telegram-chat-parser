@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -23,17 +25,37 @@ const (
 	startCommand = "start"
 )
 
+// fileBatch представляет собой группу файлов, ожидающих отправки.
+type fileBatch struct {
+	docs  []*tgbotapi.Document
+	timer *time.Timer
+}
+
 // Bot представляет собой основной объект Telegram-бота.
+// ServerAPI определяет контракт для клиента, который взаимодействует с бэкенд-сервером.
+type ServerAPI interface {
+	StartTask(ctx context.Context, files []DocumentFile) (*StartTaskResponse, error)
+	GetTaskStatus(ctx context.Context, taskID string) (*TaskStatusResponse, error)
+	GetTaskResult(ctx context.Context, taskID string, page, pageSize int) (*TaskResultResponse, error)
+}
+
 type Bot struct {
-	api          *tgbotapi.BotAPI
-	cfg          config.BotConfig
-	serverClient *ServerClient
-	taskStore    *TaskStore
-	logger       *slog.Logger
+	api               *tgbotapi.BotAPI
+	cfg               config.BotConfig
+	serverClient      ServerAPI
+	taskStore         *TaskStore
+	logger            *slog.Logger
+	pendingFiles      map[int64]*fileBatch
+	pendingFilesMutex sync.Mutex
+
+	// Для упрощения тестирования
+	sendMessageFunc      func(msg tgbotapi.Chattable) (tgbotapi.Message, error)
+	getFileDirectURLFunc func(fileID string) (string, error)
+	httpClient           *http.Client
 }
 
 // NewBot создает и инициализирует новый экземпляр бота.
-func NewBot(cfg config.BotConfig, serverClient *ServerClient, taskStore *TaskStore, logger *slog.Logger) (*Bot, error) {
+func NewBot(cfg config.BotConfig, serverClient ServerAPI, taskStore *TaskStore, logger *slog.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bot api: %w", err)
@@ -42,13 +64,20 @@ func NewBot(cfg config.BotConfig, serverClient *ServerClient, taskStore *TaskSto
 
 	logger.Info("Authorized on account", slog.String("username", api.Self.UserName))
 
-	return &Bot{
+	b := &Bot{
 		api:          api,
 		cfg:          cfg,
 		serverClient: serverClient,
 		taskStore:    taskStore,
 		logger:       logger,
-	}, nil
+		pendingFiles: make(map[int64]*fileBatch),
+	}
+
+	b.sendMessageFunc = b.api.Send
+	b.getFileDirectURLFunc = b.api.GetFileDirectURL
+	b.httpClient = &http.Client{Timeout: 30 * time.Second}
+
+	return b, nil
 }
 
 // Start запускает основной цикл обработки обновлений от Telegram.
@@ -94,11 +123,13 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 	switch msg.Command() {
 	case startCommand:
-		replyText := "Добро пожаловать! Я бот для анализа истории чатов Telegram.\n\n" +
-			"Просто отправьте мне один JSON-файл с историей, и я извлеку список участников.\n\n" +
-			"Пожалуйста, обратите внимание:\n" +
-			"• Я принимаю только один файл за раз.\n" +
-			"• Файлы не сохраняются на сервере и обрабатываются на лету."
+		replyText := fmt.Sprintf("Добро пожаловать! Я бот для анализа истории чатов Telegram.\n\n"+
+			"Просто отправьте мне один или несколько JSON-файлов с историей (до %d шт.), и я извлеку список участников.\n\n"+
+			"Как это работает:\n"+
+			"1. Отправьте первый файл.\n"+
+			"2. У вас будет %d секунды, чтобы отправить остальные.\n"+
+			"3. Бот автоматически соберет все файлы в одну задачу и начнет обработку.\n\n"+
+			"Файлы не сохраняются на сервере и обрабатываются на лету.", b.cfg.MaxFilesPerMessage, b.cfg.FileBatchTimeoutSecs)
 		reply := tgbotapi.NewMessage(msg.Chat.ID, replyText)
 		b.sendMessage(reply)
 	default:
@@ -107,43 +138,122 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 	}
 }
 
-// handleDocument обрабатывает входящий документ (файл).
+// handleDocument обрабатывает входящий документ, используя механизм группировки.
 func (b *Bot) handleDocument(ctx context.Context, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	logger := b.logger.With(slog.Int64("chat_id", chatID))
 
-	// 1. Проверяем, нет ли уже активной задачи.
+	// 1. Проверяем, нет ли уже активной задачи в обработке.
 	if _, ok := b.taskStore.Get(chatID); ok {
-		logger.Warn("user tried to start a new task while another is active")
-		reply := tgbotapi.NewMessage(chatID, "Пожалуйста, подождите завершения предыдущей задачи, прежде чем начинать новую.")
+		logger.Warn("user tried to send a file while a task is already processing")
+		reply := tgbotapi.NewMessage(chatID, "Пожалуйста, подождите завершения предыдущей задачи, прежде чем отправлять новые файлы.")
 		b.sendMessage(reply)
 		return
 	}
 
-	// 2. Скачиваем файл.
-	fileURL, err := b.api.GetFileDirectURL(msg.Document.FileID)
-	if err != nil {
-		logger.Error("failed to get file direct url", slog.String("error", err.Error()))
-		reply := tgbotapi.NewMessage(chatID, "Не удалось получить доступ к файлу. Попробуйте отправить его еще раз.")
+	b.pendingFilesMutex.Lock()
+	defer b.pendingFilesMutex.Unlock()
+
+	batch, ok := b.pendingFiles[chatID]
+	if !ok {
+		// 2. Это первый файл в потенциальной пачке.
+		logger.Info("first file in a new batch received")
+		b.pendingFiles[chatID] = &fileBatch{
+			docs: []*tgbotapi.Document{msg.Document},
+			timer: time.AfterFunc(time.Duration(b.cfg.FileBatchTimeoutSecs)*time.Second, func() {
+				b.processFileBatch(ctx, chatID)
+			}),
+		}
+		// Отправляем сообщение с предложением добавить еще файлы.
+		replyText := fmt.Sprintf(
+			"Файл '%s' получен. Вы можете отправить еще файлы (до %d шт.) в течение %d секунд для их совместной обработки.",
+			msg.Document.FileName, b.cfg.MaxFilesPerMessage, b.cfg.FileBatchTimeoutSecs,
+		)
+		reply := tgbotapi.NewMessage(chatID, replyText)
 		b.sendMessage(reply)
 		return
 	}
 
-	resp, err := http.Get(fileURL)
-	if err != nil {
-		logger.Error("failed to download file", slog.String("error", err.Error()))
-		reply := tgbotapi.NewMessage(chatID, "Не удалось скачать файл. Попробуйте отправить его еще раз.")
-		b.sendMessage(reply)
+	// 3. Это следующий файл в существующей пачке.
+	batch.timer.Stop() // Останавливаем предыдущий таймер.
+
+	batch.docs = append(batch.docs, msg.Document)
+	logger.Info("another file added to the batch", slog.Int("file_count", len(batch.docs)))
+
+	// 4. Проверяем лимит файлов.
+	if len(batch.docs) >= b.cfg.MaxFilesPerMessage {
+		logger.Info("file limit reached, processing batch immediately")
+		// Лимит достигнут, немедленно обрабатываем.
+		b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Достигнут лимит в %d файлов. Начинаю обработку...", b.cfg.MaxFilesPerMessage)))
+		go b.processFileBatch(ctx, chatID) // Запускаем в горутине, чтобы не блокировать мьютекс
 		return
 	}
-	defer resp.Body.Close()
 
-	// 3. Запускаем задачу на бэкенде.
-	startResp, err := b.serverClient.StartTask(ctx, msg.Document.FileName, resp.Body)
+	// 5. Сбрасываем таймер.
+	batch.timer.Reset(time.Duration(b.cfg.FileBatchTimeoutSecs) * time.Second)
+	reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("Файл '%s' добавлен в пачку (%d/%d).", msg.Document.FileName, len(batch.docs), b.cfg.MaxFilesPerMessage))
+	b.sendMessage(reply)
+}
+
+// processFileBatch собирает файлы из пачки, скачивает их и отправляет на сервер.
+func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
+	b.pendingFilesMutex.Lock()
+	batch, ok := b.pendingFiles[chatID]
+	if !ok {
+		b.pendingFilesMutex.Unlock()
+		return // Пачка уже была обработана
+	}
+	// Удаляем пачку, чтобы избежать повторной обработки.
+	delete(b.pendingFiles, chatID)
+	b.pendingFilesMutex.Unlock()
+
+	logger := b.logger.With(slog.Int64("chat_id", chatID), slog.Int("file_count", len(batch.docs)))
+	logger.Info("processing file batch")
+
+	// 1. Скачиваем все файлы.
+	var filesToProcess []DocumentFile
+	for _, doc := range batch.docs {
+		fileURL, err := b.getFileDirectURLFunc(doc.FileID)
+		if err != nil {
+			logger.Error("failed to get file direct url", slog.String("file_id", doc.FileID), slog.String("error", err.Error()))
+			// Сообщаем пользователю и прекращаем обработку всей пачки
+			b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Не удалось получить доступ к файлу '%s'. Обработка отменена.", doc.FileName)))
+			return
+		}
+
+		resp, err := b.httpClient.Get(fileURL)
+		if err != nil {
+			logger.Error("failed to download file", slog.String("file_name", doc.FileName), slog.String("error", err.Error()))
+			b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Не удалось скачать файл '%s'. Обработка отменена.", doc.FileName)))
+			return
+		}
+		// Важно: resp.Body должен быть закрыт после того, как httpClient его прочитает.
+		// Мы не можем закрыть его здесь, так как он будет читаться в StartTask.
+		// Ответственность за закрытие Body лежит на методе Do клиента http.
+		// Но в нашем случае мы передаем его дальше. Правильнее будет прочитать его в память.
+		bodyBytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close() // Теперь можно безопасно закрыть
+		if err != nil {
+			logger.Error("failed to read file content", slog.String("file_name", doc.FileName), slog.String("error", err.Error()))
+			b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Не удалось прочитать содержимое файла '%s'. Обработка отменена.", doc.FileName)))
+			return
+		}
+
+		filesToProcess = append(filesToProcess, DocumentFile{
+			Name:    doc.FileName,
+			Content: bytes.NewReader(bodyBytes),
+		})
+	}
+
+	// 2. Ставим задачу в очередь на сервере.
+	b.taskStore.Set(chatID, "pending") // Блокируем чат от новых задач
+	b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Начинаю обработку %d файлов...", len(filesToProcess))))
+
+	startResp, err := b.serverClient.StartTask(ctx, filesToProcess)
 	if err != nil {
 		logger.Error("failed to start task on backend", slog.String("error", err.Error()))
-		reply := tgbotapi.NewMessage(chatID, "Не удалось начать обработку файла на сервере. Пожалуйста, попробуйте позже.")
-		b.sendMessage(reply)
+		b.sendMessage(tgbotapi.NewMessage(chatID, "Не удалось начать обработку файлов на сервере. Пожалуйста, попробуйте позже."))
+		b.taskStore.Delete(chatID) // Снимаем блокировку
 		return
 	}
 
@@ -151,22 +261,22 @@ func (b *Bot) handleDocument(ctx context.Context, msg *tgbotapi.Message) {
 	logger = logger.With(slog.String("task_id", taskID))
 	logger.Info("task started on backend")
 
-	// 4. Сохраняем task_id и запускаем опрос.
+	// 3. Сохраняем task_id и запускаем опрос.
 	b.taskStore.Set(chatID, taskID)
-	go b.pollTaskStatus(context.Background(), chatID, taskID) // Используем новый контекст для фоновой задачи
-
-	reply := tgbotapi.NewMessage(chatID, "✅ Файл получен и поставлен в очередь на обработку. Ожидайте результата.")
-	b.sendMessage(reply)
+	taskStartTime := time.Now()
+	go b.pollTaskStatus(context.Background(), chatID, taskID, taskStartTime)
 }
 
 func (b *Bot) sendMessage(msg tgbotapi.Chattable) {
-	if _, err := b.api.Send(msg); err != nil {
-		b.logger.Error("failed to send message", slog.String("error", err.Error()))
+	if _, err := b.sendMessageFunc(msg); err != nil {
+		if !strings.Contains(err.Error(), "bot was blocked by the user") { // Не логируем как ошибку, если бот заблокирован
+			b.logger.Error("failed to send message", slog.String("error", err.Error()))
+		}
 	}
 }
 
 // pollTaskStatus асинхронно опрашивает статус задачи на бэкенд-сервере.
-func (b *Bot) pollTaskStatus(ctx context.Context, chatID int64, taskID string) {
+func (b *Bot) pollTaskStatus(ctx context.Context, chatID int64, taskID string, taskStartTime time.Time) {
 	logger := b.logger.With(slog.Int64("chat_id", chatID), slog.String("task_id", taskID))
 	defer b.taskStore.Delete(chatID) // Гарантированно удаляем задачу по завершении.
 
@@ -190,7 +300,7 @@ func (b *Bot) pollTaskStatus(ctx context.Context, chatID int64, taskID string) {
 			switch status.Status {
 			case "completed":
 				logger.Info("task completed")
-				b.processCompletedTask(ctx, chatID, taskID)
+				b.processCompletedTask(ctx, chatID, taskID, taskStartTime)
 				return // Завершаем опрос
 			case "failed":
 				logger.Warn("task failed", slog.String("reason", status.ErrorMessage))
@@ -208,7 +318,7 @@ func (b *Bot) pollTaskStatus(ctx context.Context, chatID int64, taskID string) {
 }
 
 // processCompletedTask обрабатывает успешно завершенную задачу.
-func (b *Bot) processCompletedTask(ctx context.Context, chatID int64, taskID string) {
+func (b *Bot) processCompletedTask(ctx context.Context, chatID int64, taskID string, taskStartTime time.Time) {
 	logger := b.logger.With(slog.Int64("chat_id", chatID), slog.String("task_id", taskID))
 	logger.Info("fetching results for completed task")
 
@@ -232,10 +342,12 @@ func (b *Bot) processCompletedTask(ctx context.Context, chatID int64, taskID str
 	if len(users) >= b.cfg.ExcelThreshold {
 		logger.Info("user count is over threshold, sending excel file")
 		b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Найдено %d участников. Формирую Excel-файл...", len(users))))
-		b.sendExcelResult(chatID, users)
+		sendStartTime := time.Now()
+		b.sendExcelResult(chatID, users, taskStartTime, sendStartTime)
 	} else {
 		logger.Info("user count is under threshold, sending text message")
-		b.sendTextResult(chatID, users)
+		sendStartTime := time.Now()
+		b.sendTextResult(chatID, users, taskStartTime, sendStartTime)
 	}
 }
 
@@ -262,7 +374,7 @@ func (b *Bot) fetchAllResults(ctx context.Context, taskID string) ([]UserDTO, er
 	return allUsers, nil
 }
 
-func (b *Bot) sendExcelResult(chatID int64, users []UserDTO) {
+func (b *Bot) sendExcelResult(chatID int64, users []UserDTO, taskStartTime, sendStartTime time.Time) {
 	f := excelize.NewFile()
 	defer func() {
 		if err := f.Close(); err != nil {
@@ -317,10 +429,19 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO) {
 	msg := tgbotapi.NewDocument(chatID, fileBytes)
 	msg.Caption = fmt.Sprintf("Анализ завершен. Найдено %d участников.", len(users))
 	b.sendMessage(msg)
+
+	totalDuration := time.Since(taskStartTime)
+	sendDuration := time.Since(sendStartTime)
+	b.logger.Info(
+		"sent excel result to user",
+		slog.Int64("chat_id", chatID),
+		slog.Duration("total_duration", totalDuration),
+		slog.Duration("send_duration", sendDuration),
+	)
 }
 
 // sendTextResult форматирует и отправляет результат в виде текстового сообщения HTML.
-func (b *Bot) sendTextResult(chatID int64, users []UserDTO) {
+func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendStartTime time.Time) {
 	if len(users) == 0 {
 		reply := tgbotapi.NewMessage(chatID, "Не найдено ни одного пользователя.")
 		b.sendMessage(reply)
@@ -452,13 +573,23 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO) {
 	// Проверка на максимальную длину сообщения в Telegram (4096 символов)
 	if len(text) > 4096 {
 		b.logger.Warn("сгенерированный текст слишком длинный, отправка в виде файла", "length", len(text))
-		b.sendResultAsTextFile(chatID, users)
+		b.sendResultAsTextFile(chatID, users, taskStartTime, sendStartTime)
 		return
 	}
 
 	if _, err := b.api.Send(reply); err != nil {
 		b.logger.Error("не удалось отправить текстовый результат", "error", err.Error())
+		return
 	}
+
+	totalDuration := time.Since(taskStartTime)
+	sendDuration := time.Since(sendStartTime)
+	b.logger.Info(
+		"sent text result to user",
+		slog.Int64("chat_id", chatID),
+		slog.Duration("total_duration", totalDuration),
+		slog.Duration("send_duration", sendDuration),
+	)
 }
 
 // generatePadding вычисляет отступ для строки с учетом поправки на CJK-символы.
@@ -578,7 +709,7 @@ func hasChannelData(users []UserDTO) bool {
 }
 
 // sendResultAsTextFile отправляет список пользователей в виде текстового файла.
-func (b *Bot) sendResultAsTextFile(chatID int64, users []UserDTO) {
+func (b *Bot) sendResultAsTextFile(chatID int64, users []UserDTO, taskStartTime, sendStartTime time.Time) {
 	var buf bytes.Buffer
 	showChannel := hasChannelData(users)
 
@@ -613,4 +744,13 @@ func (b *Bot) sendResultAsTextFile(chatID int64, users []UserDTO) {
 	msg := tgbotapi.NewDocument(chatID, fileBytes)
 	msg.Caption = fmt.Sprintf("Анализ завершен. Найдено %d участников. Список слишком большой для одного сообщения, поэтому он прикреплен в виде файла.", len(users))
 	b.sendMessage(msg)
+
+	totalDuration := time.Since(taskStartTime)
+	sendDuration := time.Since(sendStartTime)
+	b.logger.Info(
+		"sent text file result to user",
+		slog.Int64("chat_id", chatID),
+		slog.Duration("total_duration", totalDuration),
+		slog.Duration("send_duration", sendDuration),
+	)
 }

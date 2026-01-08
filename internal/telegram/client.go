@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -152,7 +153,13 @@ func (c *Client) Start(ctx context.Context) {
 			err := c.tgRunner.Run(ctx, func(runCtx context.Context) error {
 				// Проверяем статус аутентификации при запуске.
 				if _, err := c.tgRunner.API().UsersGetUsers(runCtx, []tg.InputUserClass{&tg.InputUserSelf{}}); err != nil {
-					c.log.WarnContext(runCtx, "Session check failed, attempting interactive auth", "client_id", c.id, "error", err)
+					// Если ошибка - это ожидаемое отсутствие сессии, логируем кратко.
+					// Для всех остальных, непредвиденных ошибок, сохраняем полный вывод.
+					if strings.Contains(err.Error(), "AUTH_KEY_UNREGISTERED") {
+						c.log.WarnContext(runCtx, "Session check failed, attempting interactive auth", "client_id", c.id, "reason", "AUTH_KEY_UNREGISTERED")
+					} else {
+						c.log.WarnContext(runCtx, "Session check failed, attempting interactive auth", "client_id", c.id, "error", err)
+					}
 					if !c.isTerminal(int(os.Stdout.Fd())) {
 						return fmt.Errorf("session is invalid and cannot perform interactive auth in non-terminal: %w", err)
 					}

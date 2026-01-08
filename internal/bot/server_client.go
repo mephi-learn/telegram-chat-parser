@@ -60,18 +60,27 @@ type TaskResultResponse struct {
 	Data       []UserDTO     `json:"data"`
 }
 
-// StartTask отправляет файл на сервер для начала обработки.
-func (c *ServerClient) StartTask(ctx context.Context, filename string, fileContent io.Reader) (*StartTaskResponse, error) {
+// DocumentFile представляет файл для загрузки.
+type DocumentFile struct {
+	Name    string
+	Content io.Reader
+}
+
+// StartTask отправляет один или несколько файлов на сервер для начала обработки.
+func (c *ServerClient) StartTask(ctx context.Context, files []DocumentFile) (*StartTaskResponse, error) {
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
 
-	fw, err := w.CreateFormFile("file", filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create form file: %w", err)
+	for _, file := range files {
+		fw, err := w.CreateFormFile("files", file.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create form file for %s: %w", file.Name, err)
+		}
+		if _, err = io.Copy(fw, file.Content); err != nil {
+			return nil, fmt.Errorf("failed to copy file content for %s: %w", file.Name, err)
+		}
 	}
-	if _, err = io.Copy(fw, fileContent); err != nil {
-		return nil, fmt.Errorf("failed to copy file content: %w", err)
-	}
+
 	w.Close()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/process", &b)

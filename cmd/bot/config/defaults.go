@@ -6,4 +6,7 @@ const (
 	DefaultNameColumnWidth    = 22
 	DefaultBioColumnWidth     = 25
 	DefaultChannelColumnWidth = 20
+
+	DefaultMaxFilesPerMessage   = 5
+	DefaultFileBatchTimeoutSecs = 3
 )
