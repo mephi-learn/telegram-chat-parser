@@ -149,11 +149,11 @@ go build -o bin/bot cmd/bot/main.go
 Клиент используется для отправки файлов на сервер.
 
 ```bash
-# Обработать файл и получить task_id
-./bin/client -file /path/to/chat.json
+# Обработать один или несколько файлов и получить task_id
+./bin/client /path/to/chat1.json /path/to/chat2.json
 
 # Обработать по хешу (если результат уже есть в кэше сервера)
-./bin/client -hash <sha256_of_file_content>
+# ./bin/client -hash <sha256_of_file_content>
 ```
 
 ### Проверка работоспособности бота

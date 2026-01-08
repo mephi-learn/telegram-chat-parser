@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -20,33 +21,47 @@ type TaskStatusResponse struct {
 }
 
 func main() {
-	var serverAddr, filePath string
+	var serverAddr string
 	flag.StringVar(&serverAddr, "server", "http://localhost:8080", "Server address")
-	flag.StringVar(&filePath, "file", "", "Path to the chat export file")
 	flag.Parse()
 
-	if filePath == "" {
-		log.Fatal("File path is required")
+	filePaths := flag.Args()
+	if len(filePaths) == 0 {
+		log.Fatal("At least one file path is required. Usage: client [flags] <file1> <file2> ...")
 	}
 
-	// Чтение файла
-	fileData, err := os.ReadFile(filePath)
-	if err != nil {
-		log.Fatalf("Не удалось прочитать файл: %v", err)
-	}
-
-	// Создание многочастной формы для загрузки файла
+	// Создание многочастной формы для загрузки файлов
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "chat.json")
-	if err != nil {
-		log.Fatalf("Не удалось создать файл формы: %v", err)
+
+	for _, path := range filePaths {
+		file, err := os.Open(path)
+		if err != nil {
+			log.Fatalf("Не удалось открыть файл %s: %v", path, err)
+		}
+
+		part, err := writer.CreateFormFile("files", filepath.Base(path))
+		if err != nil {
+			_ = file.Close()
+			log.Fatalf("Не удалось создать файл формы для %s: %v", path, err)
+		}
+
+		_, err = io.Copy(part, file)
+		if err != nil {
+			_ = file.Close()
+			log.Fatalf("Не удалось записать данные файла %s: %v", path, err)
+		}
+		// Закрываем файл после успешного копирования
+		if err := file.Close(); err != nil {
+			// Не фатально, но стоит залогировать
+			log.Printf("Warning: failed to close file %s: %v", path, err)
+		}
 	}
-	_, err = part.Write(fileData)
-	if err != nil {
-		log.Fatalf("Не удалось записать данные файла: %v", err)
+
+	// Важно закрыть writer, чтобы записать завершающую границу
+	if err := writer.Close(); err != nil {
+		log.Fatalf("Не удалось закрыть multipart writer: %v", err)
 	}
-	writer.Close()
 
 	// Отправка файла на сервер
 	resp, err := http.Post(serverAddr+"/api/v1/process", writer.FormDataContentType(), &body)
