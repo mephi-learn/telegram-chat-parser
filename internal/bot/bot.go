@@ -3,11 +3,13 @@ package bot
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"html"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -54,9 +56,58 @@ type Bot struct {
 	httpClient           *http.Client
 }
 
+// retryableTransport — это реализация http.RoundTripper, которая делает запросы
+// с телом повторно отправляемыми.
+// Это решает проблему, когда http.Client пытается повторить запрос (например, из-за
+// ошибки http2.ProtocolError), но не может, так как тело запроса (io.Reader)
+// уже было прочитано.
+type retryableTransport struct {
+	transport http.RoundTripper // Обычно это http.DefaultTransport
+}
+
+// RoundTrip-метод перехватывает запрос, сохраняет его тело в байтовый срез,
+// а затем устанавливает поле GetBody, которое позволяет клиенту пересоздавать
+// тело для повторных попыток.
+func (t *retryableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Мы вмешиваемся, только если есть тело и GetBody не установлен.
+	if req.Body != nil && req.GetBody == nil {
+		// io.ReadAll читает тело до конца.
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		// Транспорт отвечает за закрытие тела запроса, поэтому мы должны закрыть исходное.
+		if err := req.Body.Close(); err != nil {
+			return nil, err
+		}
+
+		// GetBody — это функция, которая возвращает новый io.ReadCloser для тела.
+		// Она будет вызываться при каждой попытке отправки запроса.
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+		}
+		// Также нужно установить тело для первой попытки.
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	// Выполняем запрос с использованием нижележащего транспорта.
+	return t.transport.RoundTrip(req)
+}
+
 // NewBot создает и инициализирует новый экземпляр бота.
 func NewBot(cfg config.BotConfig, serverClient ServerAPI, taskStore *TaskStore, logger *slog.Logger) (*Bot, error) {
-	api, err := tgbotapi.NewBotAPI(cfg.Token)
+	// Создаем кастомный http.Client с поддержкой повторных запросов для отправки файлов.
+	// Это решает проблему с ошибкой "cannot retry err ... after Request.Body was written".
+	retryableAPIClient := &http.Client{
+		// Устанавливаем таймаут из конфигурации.
+		Timeout: time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
+		Transport: &retryableTransport{
+			// Используем стандартный транспорт как основу.
+			transport: http.DefaultTransport,
+		},
+	}
+
+	api, err := tgbotapi.NewBotAPIWithClient(cfg.Token, tgbotapi.APIEndpoint, retryableAPIClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bot api: %w", err)
 	}
@@ -75,6 +126,7 @@ func NewBot(cfg config.BotConfig, serverClient ServerAPI, taskStore *TaskStore, 
 
 	b.sendMessageFunc = b.api.Send
 	b.getFileDirectURLFunc = b.api.GetFileDirectURL
+	// Этот клиент используется для скачивания файлов, ему не нужен retryable transport.
 	b.httpClient = &http.Client{Timeout: 30 * time.Second}
 
 	return b, nil
@@ -83,7 +135,12 @@ func NewBot(cfg config.BotConfig, serverClient ServerAPI, taskStore *TaskStore, 
 // Start запускает основной цикл обработки обновлений от Telegram.
 func (b *Bot) Start(ctx context.Context) {
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	// Таймаут для long-polling должен быть меньше, чем общий таймаут HTTP-клиента,
+	// чтобы избежать обрыва соединения на стороне клиента.
+	u.Timeout = b.cfg.HTTPTimeoutSeconds - 5
+	if u.Timeout < 10 { // Убедимся, что таймаут не слишком короткий
+		u.Timeout = 50
+	}
 
 	updates := b.api.GetUpdatesChan(u)
 
@@ -212,6 +269,13 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 
 	// 1. Скачиваем все файлы.
 	var filesToProcess []DocumentFile
+	type fileWithHash struct {
+		doc   *tgbotapi.Document
+		bytes []byte
+		hash  string
+	}
+	var filesWithHashes []fileWithHash
+
 	for _, doc := range batch.docs {
 		fileURL, err := b.getFileDirectURLFunc(doc.FileID)
 		if err != nil {
@@ -227,10 +291,6 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 			b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Не удалось скачать файл '%s'. Обработка отменена.", doc.FileName)))
 			return
 		}
-		// Важно: resp.Body должен быть закрыт после того, как httpClient его прочитает.
-		// Мы не можем закрыть его здесь, так как он будет читаться в StartTask.
-		// Ответственность за закрытие Body лежит на методе Do клиента http.
-		// Но в нашем случае мы передаем его дальше. Правильнее будет прочитать его в память.
 		bodyBytes, err := io.ReadAll(resp.Body)
 		resp.Body.Close() // Теперь можно безопасно закрыть
 		if err != nil {
@@ -239,13 +299,32 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 			return
 		}
 
-		filesToProcess = append(filesToProcess, DocumentFile{
-			Name:    doc.FileName,
-			Content: bytes.NewReader(bodyBytes),
+		// Вычисляем хеш содержимого
+		h := sha256.New()
+		h.Write(bodyBytes)
+		hash := fmt.Sprintf("%x", h.Sum(nil))
+
+		filesWithHashes = append(filesWithHashes, fileWithHash{
+			doc:   doc,
+			bytes: bodyBytes,
+			hash:  hash,
 		})
 	}
 
-	// 2. Ставим задачу в очередь на сервере.
+	// 2. Сортируем файлы по хешу содержимого для обеспечения детерминированного порядка.
+	sort.Slice(filesWithHashes, func(i, j int) bool {
+		return filesWithHashes[i].hash < filesWithHashes[j].hash
+	})
+
+	// 3. Создаем финальный срез для отправки на сервер, уже отсортированный.
+	for _, fwh := range filesWithHashes {
+		filesToProcess = append(filesToProcess, DocumentFile{
+			Name:    fwh.doc.FileName,
+			Content: bytes.NewReader(fwh.bytes),
+		})
+	}
+
+	// 4. Ставим задачу в очередь на сервере.
 	b.taskStore.Set(chatID, "pending") // Блокируем чат от новых задач
 	b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Начинаю обработку %d файлов...", len(filesToProcess))))
 
@@ -267,12 +346,14 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 	go b.pollTaskStatus(context.Background(), chatID, taskID, taskStartTime)
 }
 
-func (b *Bot) sendMessage(msg tgbotapi.Chattable) {
+func (b *Bot) sendMessage(msg tgbotapi.Chattable) error {
 	if _, err := b.sendMessageFunc(msg); err != nil {
 		if !strings.Contains(err.Error(), "bot was blocked by the user") { // Не логируем как ошибку, если бот заблокирован
-			b.logger.Error("failed to send message", slog.String("error", err.Error()))
+			b.logger.Error("failed to send message", "error", err)
 		}
+		return err
 	}
+	return nil
 }
 
 // pollTaskStatus асинхронно опрашивает статус задачи на бэкенд-сервере.
@@ -428,7 +509,10 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO, taskStartTime, send
 
 	msg := tgbotapi.NewDocument(chatID, fileBytes)
 	msg.Caption = fmt.Sprintf("Анализ завершен. Найдено %d участников.", len(users))
-	b.sendMessage(msg)
+	if err := b.sendMessage(msg); err != nil {
+		// Ошибка уже залогирована в sendMessage, просто выходим, чтобы не логировать ложный успех.
+		return
+	}
 
 	totalDuration := time.Since(taskStartTime)
 	sendDuration := time.Since(sendStartTime)
@@ -743,7 +827,10 @@ func (b *Bot) sendResultAsTextFile(chatID int64, users []UserDTO, taskStartTime,
 
 	msg := tgbotapi.NewDocument(chatID, fileBytes)
 	msg.Caption = fmt.Sprintf("Анализ завершен. Найдено %d участников. Список слишком большой для одного сообщения, поэтому он прикреплен в виде файла.", len(users))
-	b.sendMessage(msg)
+	if err := b.sendMessage(msg); err != nil {
+		// Ошибка уже залогирована в sendMessage, просто выходим, чтобы не логировать ложный успех.
+		return
+	}
 
 	totalDuration := time.Since(taskStartTime)
 	sendDuration := time.Since(sendStartTime)

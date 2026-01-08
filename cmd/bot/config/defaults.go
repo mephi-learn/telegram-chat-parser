@@ -9,4 +9,5 @@ const (
 
 	DefaultMaxFilesPerMessage   = 5
 	DefaultFileBatchTimeoutSecs = 3
+	DefaultHTTPTimeoutSeconds   = 120
 )

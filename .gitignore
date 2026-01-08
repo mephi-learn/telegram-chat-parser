@@ -8,6 +8,7 @@
 # Binaries
 /client
 /server
+/bot
 bin/client
 bin/parser
 coverage.out

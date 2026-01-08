@@ -86,7 +86,7 @@ func TestProcessChatUseCase(t *testing.T) {
 		// Combined
 		allRawParticipants := append(rawParticipants1, rawParticipants2...)
 		finalUsers := []domain.User{{ID: 1, Name: "User 1"}, {ID: 2, Name: "User 2"}}
-		enricher.On("Enrich", ctx, allRawParticipants).Return(finalUsers, nil).Once()
+		enricher.On("Enrich", mock.Anything, allRawParticipants).Return(finalUsers, nil).Once()
 
 		users, err := uc.ProcessChat(ctx, []string{filePath1, filePath2})
 
@@ -174,7 +174,7 @@ func TestProcessChatUseCase(t *testing.T) {
 
 		parser.On("Parse", mock.Anything).Return(chat, nil)
 		extractor.On("ExtractRawParticipants", chat).Return(rawParticipants, nil)
-		enricher.On("Enrich", ctx, mock.AnythingOfType("[]domain.RawParticipant")).Return(nil, enrichErr)
+		enricher.On("Enrich", mock.Anything, mock.AnythingOfType("[]domain.RawParticipant")).Return(nil, enrichErr)
 
 		_, err := uc.ProcessChat(ctx, []string{filePath})
 

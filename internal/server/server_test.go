@@ -158,11 +158,14 @@ func TestServer(t *testing.T) {
 		err := json.NewDecoder(rr.Body).Decode(&resp)
 		require.NoError(t, err)
 
-		// Note: simplified parsing in handler uses default values
-		assert.Equal(t, 1, resp.Pagination.CurrentPage)
-		assert.Equal(t, 50, resp.Pagination.PageSize)
+		// Assert that the pagination is handled correctly
+		assert.Equal(t, 2, resp.Pagination.CurrentPage)
+		assert.Equal(t, 5, resp.Pagination.PageSize)
 		assert.Equal(t, 15, resp.Pagination.TotalItems)
-		assert.Equal(t, 1, resp.Pagination.TotalPages)
-		assert.Len(t, resp.Data, 15)
+		assert.Equal(t, 3, resp.Pagination.TotalPages)
+		assert.Len(t, resp.Data, 5)
+		// Check the content of the paginated data
+		assert.Equal(t, int64(5), resp.Data[0].ID)
+		assert.Equal(t, int64(9), resp.Data[4].ID)
 	})
 }

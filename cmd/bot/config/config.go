@@ -23,6 +23,7 @@ type BotConfig struct {
 	ExcelThreshold         int          `yaml:"excel_threshold"`
 	MaxFilesPerMessage     int          `yaml:"max_files_per_message"`
 	FileBatchTimeoutSecs   int          `yaml:"file_batch_timeout_seconds"`
+	HTTPTimeoutSeconds     int          `yaml:"http_timeout_seconds"`
 	Render                 ColumnWidths `yaml:"render"`
 }
 
@@ -50,6 +51,9 @@ func LoadBotConfig(filename string) (*BotConfig, error) {
 	}
 	if botCfg.FileBatchTimeoutSecs == 0 {
 		botCfg.FileBatchTimeoutSecs = DefaultFileBatchTimeoutSecs
+	}
+	if botCfg.HTTPTimeoutSeconds == 0 {
+		botCfg.HTTPTimeoutSeconds = DefaultHTTPTimeoutSeconds
 	}
 	if botCfg.Render.User == 0 {
 		botCfg.Render.User = DefaultUserColumnWidth

@@ -2,10 +2,13 @@ package bot
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -172,4 +175,131 @@ func TestBot_HandleDocument_Batching(t *testing.T) {
 		require.Len(t, receivedMessages, 1)
 		assert.Contains(t, receivedMessages[0], "Пожалуйста, подождите завершения предыдущей задачи")
 	})
+}
+
+func TestBot_ProcessFileBatch_Sorting(t *testing.T) {
+	defaultConfig := config.BotConfig{
+		MaxFilesPerMessage:     3,
+		FileBatchTimeoutSecs:   1,
+		PollingIntervalSeconds: 1,
+	}
+
+	ctx := context.Background()
+
+	// Создаем тестовые сервера для разных файлов
+	content1 := []byte(`{"name":"chat1","messages":[{"id":1,"text":"Hello"}]}`)
+	content2 := []byte(`{"name":"chat2","messages":[{"id":1,"text":"World"}]}`)
+	content3 := []byte(`{"name":"chat3","messages":[{"id":1,"text":"!"}]}`)
+
+	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content1)
+	}))
+	defer ts1.Close()
+
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content2)
+	}))
+	defer ts2.Close()
+
+	ts3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content3)
+	}))
+	defer ts3.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var receivedFiles []DocumentFile
+	mockClient := &mockServerClient{
+		startTaskFunc: func(ctx context.Context, files []DocumentFile) (*StartTaskResponse, error) {
+			receivedFiles = files
+			wg.Done()
+			return &StartTaskResponse{TaskID: "test-task"}, nil
+		},
+	}
+
+	bot := newTestBot(t, defaultConfig, mockClient)
+
+	// Создаем клиент, который возвращает разные URL для разных FileID
+	bot.httpClient = &http.Client{}
+	bot.getFileDirectURLFunc = func(fileID string) (string, error) {
+		switch fileID {
+		case "file1":
+			return ts1.URL, nil
+		case "file2":
+			return ts2.URL, nil
+		case "file3":
+			return ts3.URL, nil
+		default:
+			return "", nil
+		}
+	}
+
+	// Создаем пачку вручную, как это делает handleDocument
+	chatID := int64(123)
+	bot.pendingFilesMutex.Lock()
+	bot.pendingFiles[chatID] = &fileBatch{
+		docs: []*tgbotapi.Document{
+			{FileID: "file2", FileName: "file2.json"},
+			{FileID: "file1", FileName: "file1.json"},
+			{FileID: "file3", FileName: "file3.json"},
+		},
+	}
+	bot.pendingFilesMutex.Unlock()
+
+	go func() {
+		// Даем немного времени, чтобы горутина запустилась
+		time.Sleep(100 * time.Millisecond)
+		bot.processFileBatch(ctx, chatID)
+	}()
+
+	wg.Wait()
+
+	// Проверяем, что файлы были отправлены в отсортированном порядке по хешу содержимого
+	require.Len(t, receivedFiles, 3)
+
+	// Проверим, что содержимое соответствует именам файлов
+	contentMap := map[string][]byte{
+		"file1.json": content1,
+		"file2.json": content2,
+		"file3.json": content3,
+	}
+
+	for _, file := range receivedFiles {
+		expectedContent, ok := contentMap[file.Name]
+		if !assert.True(t, ok, "Unexpected file name: %s", file.Name) {
+			continue
+		}
+		fileContent, err := io.ReadAll(file.Content)
+		assert.NoError(t, err)
+		assert.Equal(t, expectedContent, fileContent, "Content mismatch for file %s", file.Name)
+	}
+
+	// Теперь проверим, что порядок соответствует сортировке по хешу.
+	// Для этого вычислим хеши содержимого и проверим, что они идут в возрастающем порядке.
+	type fileHash struct {
+		name string
+		hash string
+	}
+
+	var hashes []fileHash
+	for name, content := range contentMap {
+		h := sha256.New()
+		h.Write(content)
+		hash := fmt.Sprintf("%x", h.Sum(nil))
+		hashes = append(hashes, fileHash{name: name, hash: hash})
+	}
+
+	// Сортируем наши эталонные хеши
+	sort.Slice(hashes, func(i, j int) bool {
+		return hashes[i].hash < hashes[j].hash
+	})
+
+	// Проверяем, что полученные файлы идут в том же порядке, что и отсортированные хеши
+	for i, expected := range hashes {
+		assert.Equal(t, expected.name, receivedFiles[i].Name, "File at position %d should be %s based on hash sort", i, expected.name)
+	}
 }
