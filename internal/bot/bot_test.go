@@ -175,6 +175,48 @@ func TestBot_HandleDocument_Batching(t *testing.T) {
 		require.Len(t, receivedMessages, 1)
 		assert.Contains(t, receivedMessages[0], "Пожалуйста, подождите завершения предыдущей задачи")
 	})
+
+	t.Run("rejects new files if file limit is exceeded", func(t *testing.T) {
+		bot := newTestBot(t, defaultConfig, &mockServerClient{})
+
+		var receivedMessages []string
+		bot.sendMessageFunc = func(msg tgbotapi.Chattable) (tgbotapi.Message, error) {
+			m, ok := msg.(tgbotapi.MessageConfig)
+			if ok {
+				receivedMessages = append(receivedMessages, m.Text)
+			}
+			return tgbotapi.Message{}, nil
+		}
+
+		chatID := int64(999)
+
+		// Добавляем файлы в пачку до лимита
+		bot.pendingFilesMutex.Lock()
+		bot.pendingFiles[chatID] = &fileBatch{
+			docs: []*tgbotapi.Document{
+				{FileID: "file1", FileName: "file1.json"},
+				{FileID: "file2", FileName: "file2.json"},
+				{FileID: "file3", FileName: "file3.json"},
+			},
+			// Создаем таймер, который не будет срабатывать в рамках теста
+			timer: time.NewTimer(time.Hour),
+		}
+		bot.pendingFilesMutex.Unlock()
+
+		// Пытаемся добавить еще один файл, превышая лимит
+		msg := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: chatID}, Document: &tgbotapi.Document{FileID: "file4", FileName: "file4.json"}}
+		bot.handleDocument(ctx, msg)
+
+		require.Len(t, receivedMessages, 1)
+		assert.Contains(t, receivedMessages[0], "Превышен лимит файлов в одном сообщении")
+		assert.Contains(t, receivedMessages[0], "3 файлов")
+
+		// Проверяем, что пачка файлов была удалена после превышения лимита
+		bot.pendingFilesMutex.Lock()
+		_, exists := bot.pendingFiles[chatID]
+		bot.pendingFilesMutex.Unlock()
+		assert.False(t, exists, "Пачка файлов должна быть удалена после превышения лимита")
+	})
 }
 
 func TestBot_ProcessFileBatch_Sorting(t *testing.T) {

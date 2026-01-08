@@ -234,6 +234,16 @@ func (b *Bot) handleDocument(ctx context.Context, msg *tgbotapi.Message) {
 	// 3. Это следующий файл в существующей пачке.
 	batch.timer.Stop() // Останавливаем предыдущий таймер.
 
+	// Проверяем превышение лимита файлов
+	if len(batch.docs) >= b.cfg.MaxFilesPerMessage {
+		logger.Warn("file limit exceeded", slog.Int("file_count", len(batch.docs)+1), slog.Int("max_files", b.cfg.MaxFilesPerMessage))
+		reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("Превышен лимит файлов в одном сообщении: %d файлов. Обработка не начата.", b.cfg.MaxFilesPerMessage))
+		b.sendMessage(reply)
+		// Очищаем пачку файлов, чтобы предотвратить обработку при следующем таймауте
+		delete(b.pendingFiles, chatID)
+		return
+	}
+
 	batch.docs = append(batch.docs, msg.Document)
 	logger.Info("another file added to the batch", slog.Int("file_count", len(batch.docs)))
 
