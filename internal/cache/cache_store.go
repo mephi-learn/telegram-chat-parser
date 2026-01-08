@@ -86,6 +86,13 @@ func (cs *CacheStore) StartCleanupTicker(ctx context.Context, interval time.Dura
 	}()
 }
 
+// CalculateHash вычисляет хеш SHA-256 для байтовых данных.
+func CalculateHash(data []byte) string {
+	h := sha256.New()
+	h.Write(data)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // CalculateHashFromString вычисляет хеш SHA-256 для строки.
 func CalculateHashFromString(data string) string {
 	h := sha256.New()

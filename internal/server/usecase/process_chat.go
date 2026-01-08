@@ -2,6 +2,8 @@ package usecase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"telegram-chat-parser/internal/adapters/source"
@@ -94,6 +96,79 @@ func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePaths []strin
 			return nil, fmt.Errorf("не удалось извлечь участников из %s: %w", filePath, err)
 		}
 		slog.Info("Извлечены участники", "path", filePath, "count", len(rawParticipants))
+
+		allRawParticipants = append(allRawParticipants, rawParticipants...)
+	}
+
+	slog.Info("Всего сырых участников из всех чатов", "count", len(allRawParticipants))
+
+	// Обогащение объединенного списка участников
+	slog.Info("Обогащение данных через Telegram API...")
+	finalUsers, err := uc.enricher.Enrich(taskCtx, allRawParticipants)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось обогатить данные: %w", err)
+	}
+
+	// Кеширование окончательного результата
+	ttl := uc.cfg.Processing.CacheTTL
+	uc.cacheStore.Put(combinedHash, finalUsers, ttl)
+	slog.Info("Результат кеширован для набора файлов", "hash", combinedHash, "ttl", ttl.String())
+
+	slog.Info("Обработка успешно завершена", "user_count", len(finalUsers))
+	return finalUsers, nil
+}
+
+// ProcessChatFromData обрабатывает несколько файлов экспорта чата из данных в памяти.
+// Он разбирает, объединяет участников и затем обогащает их данные.
+func (uc *ProcessChatUseCase) ProcessChatFromData(ctx context.Context, fileDataList [][]byte) ([]domain.User, error) {
+	taskTimeout := uc.cfg.Processing.TaskTimeout
+	slog.InfoContext(ctx, "Starting chat processing task from data", "configured_timeout", taskTimeout.String())
+
+	// Создаем новый контекст с таймаутом для всей задачи, если он задан.
+	// 0 означает отсутствие таймаута.
+	var taskCtx context.Context
+	var cancel context.CancelFunc
+	if taskTimeout > 0 {
+		taskCtx, cancel = context.WithTimeout(ctx, taskTimeout)
+	} else {
+		taskCtx, cancel = context.WithCancel(ctx)
+	}
+	defer cancel()
+
+	var allRawParticipants []domain.RawParticipant
+	var fileHashes []string
+
+	// Вычисляем хеши для каждого блока данных
+	for _, data := range fileDataList {
+		h := sha256.New()
+		h.Write(data)
+		fileHash := hex.EncodeToString(h.Sum(nil))
+		fileHashes = append(fileHashes, fileHash)
+	}
+
+	// Создание единого хеша для набора файлов
+	combinedHash := cache.CalculateHashFromString(fmt.Sprintf("%v", fileHashes))
+
+	// Проверка кеша по единому хешу
+	if cachedItem, found := uc.cacheStore.Get(combinedHash); found {
+		slog.Info("Попадание в кеш для набора файлов", "hash", combinedHash)
+		return cachedItem.Data, nil
+	}
+
+	for i, data := range fileDataList {
+		slog.Info("Обработка данных из файла", "index", i, "size", len(data))
+
+		chat, err := uc.parser.Parse(data)
+		if err != nil {
+			return nil, fmt.Errorf("не удалось разобрать данные из файла %d: %w", i, err)
+		}
+		slog.Info("Разобран чат", "index", i, "message_count", len(chat.Messages))
+
+		rawParticipants, err := uc.extractor.ExtractRawParticipants(chat)
+		if err != nil {
+			return nil, fmt.Errorf("не удалось извлечь участников из файла %d: %w", i, err)
+		}
+		slog.Info("Извлечены участники", "index", i, "count", len(rawParticipants))
 
 		allRawParticipants = append(allRawParticipants, rawParticipants...)
 	}

@@ -3,12 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"telegram-chat-parser/internal/cache"
 	"telegram-chat-parser/internal/domain"
@@ -22,6 +19,7 @@ import (
 // ChatProcessor определяет интерфейс для варианта использования, который обрабатывает чаты.
 type ChatProcessor interface {
 	ProcessChat(ctx context.Context, filePaths []string) ([]domain.User, error)
+	ProcessChatFromData(ctx context.Context, fileDataList [][]byte) ([]domain.User, error)
 }
 
 // Server представляет HTTP-сервер
@@ -68,8 +66,7 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 			}
 
 			taskID := uuid.NewString()
-			var tempFilePaths []string
-			tempDir := os.TempDir()
+			var fileDataList [][]byte
 
 			for i, fileHeader := range files {
 				file, err := fileHeader.Open()
@@ -79,45 +76,31 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 				}
 				defer file.Close()
 
-				tempFilePath := filepath.Join(tempDir, fmt.Sprintf("chat_%s_%d.json", taskID, i))
-				tempFilePaths = append(tempFilePaths, tempFilePath)
-
-				out, err := os.Create(tempFilePath)
+				data, err := io.ReadAll(file)
 				if err != nil {
-					http.Error(w, "Не удалось создать временный файл", http.StatusInternalServerError)
+					http.Error(w, "Не удалось прочитать загруженный файл", http.StatusInternalServerError)
 					return
 				}
-				defer out.Close()
-
-				if _, err := io.Copy(out, file); err != nil {
-					http.Error(w, "Не удалось сохранить загруженный файл", http.StatusInternalServerError)
-					return
-				}
-				slog.Info("Загруженный файл сохранен во временный файл", "path", tempFilePath)
+				fileDataList = append(fileDataList, data)
+				slog.Info("Загруженный файл прочитан в память", "size", len(data), "index", i)
 			}
 
 			// Создание задачи в хранилище
 			taskStore.CreateTask(taskID, cfg.Processing.CacheTTL)
 
 			// Запуск обработки в горутине
-			go func(paths []string) {
-				defer func() {
-					for _, path := range paths {
-						os.Remove(path)
-					}
-				}()
-
+			go func(dataList [][]byte) {
 				taskStore.UpdateTaskStatus(taskID, TaskStatusProcessing)
 
 				// Передаем фоновый контекст; use case сам управляет своим таймаутом.
-				result, err := processor.ProcessChat(context.Background(), paths)
+				result, err := processor.ProcessChatFromData(context.Background(), dataList)
 				if err != nil {
 					taskStore.UpdateTaskError(taskID, err.Error())
 					return
 				}
 
 				taskStore.UpdateTaskResult(taskID, result)
-			}(tempFilePaths)
+			}(fileDataList)
 
 			// Возврат идентификатора задачи
 			w.Header().Set("Content-Type", "application/json")
