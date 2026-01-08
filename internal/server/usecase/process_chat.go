@@ -37,60 +37,67 @@ func NewProcessChatUseCase(
 	}
 }
 
-// ProcessChat обрабатывает файл экспорта чата.
-// Он извлекает данные, разбирает их, извлекает участников и обогащает их через Telegram API.
-func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePath string) ([]domain.User, error) {
-	// Вычисление хеша файла
-	fileHash, err := cache.CalculateFileHash(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("не удалось вычислить хеш файла: %w", err)
+// ProcessChat обрабатывает несколько файлов экспорта чата.
+// Он извлекает, разбирает, объединяет участников и затем обогащает их данные.
+func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePaths []string) ([]domain.User, error) {
+	var allRawParticipants []domain.RawParticipant
+	var fileHashes []string
+
+	for _, filePath := range filePaths {
+		fileHash, err := cache.CalculateFileHash(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("не удалось вычислить хеш файла %s: %w", filePath, err)
+		}
+		fileHashes = append(fileHashes, fileHash)
 	}
 
-	// Проверка, есть ли результат уже в кеше
-	if cachedItem, found := uc.cacheStore.Get(fileHash); found {
-		slog.Info("Попадание в кеш для файла", "hash", fileHash)
+	// Создание единого хеша для набора файлов
+	combinedHash := cache.CalculateHashFromString(fmt.Sprintf("%v", fileHashes))
+
+	// Проверка кеша по единому хешу
+	if cachedItem, found := uc.cacheStore.Get(combinedHash); found {
+		slog.Info("Попадание в кеш для набора файлов", "hash", combinedHash)
 		return cachedItem.Data, nil
 	}
 
-	// 1. Извлечение данных из файла
-	slog.Info("Извлечение данных из файла...", "path", filePath)
-	ds := source.NewCliSource(filePath)
-	data, err := ds.Fetch()
-	if err != nil {
-		return nil, fmt.Errorf("не удалось извлечь данные: %w", err)
+	for _, filePath := range filePaths {
+		slog.Info("Обработка файла", "path", filePath)
+
+		ds := source.NewCliSource(filePath)
+		data, err := ds.Fetch()
+		if err != nil {
+			return nil, fmt.Errorf("не удалось извлечь данные из %s: %w", filePath, err)
+		}
+
+		chat, err := uc.parser.Parse(data)
+		if err != nil {
+			return nil, fmt.Errorf("не удалось разобрать данные из %s: %w", filePath, err)
+		}
+		slog.Info("Разобран чат", "path", filePath, "message_count", len(chat.Messages))
+
+		rawParticipants, err := uc.extractor.ExtractRawParticipants(chat)
+		if err != nil {
+			return nil, fmt.Errorf("не удалось извлечь участников из %s: %w", filePath, err)
+		}
+		slog.Info("Извлечены участники", "path", filePath, "count", len(rawParticipants))
+
+		allRawParticipants = append(allRawParticipants, rawParticipants...)
 	}
 
-	// 2. Разбор данных
-	slog.Info("Разбор данных...")
-	chat, err := uc.parser.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("не удалось разобрать данные: %w", err)
-	}
-	// Логирование разобранной структуры чата
-	slog.Info("Разобранная структура чата", "message_count", len(chat.Messages), "chat_name", chat.Name, "chat_type", chat.Type)
+	slog.Info("Всего сырых участников из всех чатов", "count", len(allRawParticipants))
 
-	// 3. Извлечение сырых участников
-	slog.Info("Извлечение сырых участников...")
-	rawParticipants, err := uc.extractor.ExtractRawParticipants(chat)
-	if err != nil {
-		return nil, fmt.Errorf("не удалось извлечь сырых участников: %w", err)
-	}
-	// Логирование извлеченных сырых участников
-	slog.Info("Извлеченные сырые участники", "count", len(rawParticipants), "participants", rawParticipants)
-
-	// 4. Обогащение данных через Telegram API
-	slog.Info("Обогащение данных через Telegram API... Это может занять некоторое время и потребовать аутентификации.")
-	finalUsers, err := uc.enricher.Enrich(ctx, rawParticipants)
+	// Обогащение объединенного списка участников
+	slog.Info("Обогащение данных через Telegram API...")
+	finalUsers, err := uc.enricher.Enrich(ctx, allRawParticipants)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось обогатить данные: %w", err)
 	}
 
-	// 5. Сохранение результата в кеше
+	// Кеширование окончательного результата
 	ttl := uc.cfg.Processing.CacheTTL
-	uc.cacheStore.Put(fileHash, finalUsers, ttl)
-	slog.Info("Результат кеширован для файла", "hash", fileHash, "ttl", ttl.String())
+	uc.cacheStore.Put(combinedHash, finalUsers, ttl)
+	slog.Info("Результат кеширован для набора файлов", "hash", combinedHash, "ttl", ttl.String())
 
 	slog.Info("Обработка успешно завершена", "user_count", len(finalUsers))
-	slog.Info("Окончательный список обогащенных пользователей", "users", finalUsers)
 	return finalUsers, nil
 }

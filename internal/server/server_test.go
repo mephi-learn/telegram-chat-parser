@@ -26,8 +26,8 @@ type mockProcessor struct {
 	mock.Mock
 }
 
-func (m *mockProcessor) ProcessChat(ctx context.Context, filePath string) ([]domain.User, error) {
-	args := m.Called(ctx, filePath)
+func (m *mockProcessor) ProcessChat(ctx context.Context, filePaths []string) ([]domain.User, error) {
+	args := m.Called(ctx, filePaths)
 	if res := args.Get(0); res != nil {
 		return res.([]domain.User), args.Error(1)
 	}
@@ -73,7 +73,7 @@ func TestServer(t *testing.T) {
 
 		var b bytes.Buffer
 		writer := multipart.NewWriter(&b)
-		fw, err := writer.CreateFormFile("file", filepath.Base(tmpfile.Name()))
+		fw, err := writer.CreateFormFile("files", filepath.Base(tmpfile.Name()))
 		require.NoError(t, err)
 		file, err := os.Open(tmpfile.Name())
 		require.NoError(t, err)
@@ -81,7 +81,7 @@ func TestServer(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, writer.Close())
 
-		mockProc.On("ProcessChat", mock.Anything, mock.AnythingOfType("string")).Return([]domain.User{}, nil).Once()
+		mockProc.On("ProcessChat", mock.Anything, mock.AnythingOfType("[]string")).Return([]domain.User{}, nil).Once()
 
 		req := httptest.NewRequest("POST", "/api/v1/process", &b)
 		req.Header.Set("Content-Type", writer.FormDataContentType())

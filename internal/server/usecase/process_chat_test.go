@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"telegram-chat-parser/internal/cache"
 	"telegram-chat-parser/internal/domain"
@@ -61,32 +62,42 @@ func TestProcessChatUseCase(t *testing.T) {
 
 	// Create a dummy file for hash calculation
 	filePath := createTempFile(t, "{}")
-	fileHash, err := cache.CalculateFileHash(filePath)
-	assert.NoError(t, err)
-
-	t.Run("success flow", func(t *testing.T) {
+	t.Run("success flow with multiple files", func(t *testing.T) {
 		parser := new(mockParser)
 		extractor := new(mockExtractor)
 		enricher := new(mockEnricher)
 		cacheStore := cache.NewCacheStore()
-
 		uc := NewProcessChatUseCase(cfg, parser, extractor, enricher, cacheStore)
 
-		chat := &domain.ExportedChat{Name: "Test Chat"}
-		rawParticipants := []domain.RawParticipant{{UserID: "user1"}}
-		finalUsers := []domain.User{{ID: 1, Name: "User 1"}}
+		// File 1
+		filePath1 := createTempFile(t, `{"name": "chat1"}`)
+		chat1 := &domain.ExportedChat{Name: "Test Chat 1"}
+		rawParticipants1 := []domain.RawParticipant{{UserID: "user1"}}
+		parser.On("Parse", []byte(`{"name": "chat1"}`)).Return(chat1, nil).Once()
+		extractor.On("ExtractRawParticipants", chat1).Return(rawParticipants1, nil).Once()
 
-		parser.On("Parse", mock.Anything).Return(chat, nil)
-		extractor.On("ExtractRawParticipants", chat).Return(rawParticipants, nil)
-		enricher.On("Enrich", ctx, rawParticipants).Return(finalUsers, nil)
+		// File 2
+		filePath2 := createTempFile(t, `{"name": "chat2"}`)
+		chat2 := &domain.ExportedChat{Name: "Test Chat 2"}
+		rawParticipants2 := []domain.RawParticipant{{UserID: "user2"}}
+		parser.On("Parse", []byte(`{"name": "chat2"}`)).Return(chat2, nil).Once()
+		extractor.On("ExtractRawParticipants", chat2).Return(rawParticipants2, nil).Once()
 
-		users, err := uc.ProcessChat(ctx, filePath)
+		// Combined
+		allRawParticipants := append(rawParticipants1, rawParticipants2...)
+		finalUsers := []domain.User{{ID: 1, Name: "User 1"}, {ID: 2, Name: "User 2"}}
+		enricher.On("Enrich", ctx, allRawParticipants).Return(finalUsers, nil).Once()
+
+		users, err := uc.ProcessChat(ctx, []string{filePath1, filePath2})
 
 		assert.NoError(t, err)
 		assert.Equal(t, finalUsers, users)
 
 		// Check cache
-		cached, found := cacheStore.Get(fileHash)
+		hash1, _ := cache.CalculateFileHash(filePath1)
+		hash2, _ := cache.CalculateFileHash(filePath2)
+		combinedHash := cache.CalculateHashFromString(fmt.Sprintf("%v", []string{hash1, hash2}))
+		cached, found := cacheStore.Get(combinedHash)
 		assert.True(t, found)
 		assert.Equal(t, finalUsers, cached.Data)
 
@@ -96,17 +107,18 @@ func TestProcessChatUseCase(t *testing.T) {
 	})
 
 	t.Run("cache hit", func(t *testing.T) {
-		parser := new(mockParser) // Should not be called
+		parser := new(mockParser)
 		extractor := new(mockExtractor)
 		enricher := new(mockEnricher)
 		cacheStore := cache.NewCacheStore()
-
-		cachedUsers := []domain.User{{ID: 99, Name: "Cached User"}}
-		cacheStore.Put(fileHash, cachedUsers, 10*time.Minute)
-
 		uc := NewProcessChatUseCase(cfg, parser, extractor, enricher, cacheStore)
 
-		users, err := uc.ProcessChat(ctx, filePath)
+		cachedUsers := []domain.User{{ID: 99, Name: "Cached User"}}
+		fileHash, _ := cache.CalculateFileHash(filePath)
+		combinedHash := cache.CalculateHashFromString(fmt.Sprintf("%v", []string{fileHash}))
+		cacheStore.Put(combinedHash, cachedUsers, 10*time.Minute)
+
+		users, err := uc.ProcessChat(ctx, []string{filePath})
 
 		assert.NoError(t, err)
 		assert.Equal(t, cachedUsers, users)
@@ -115,7 +127,7 @@ func TestProcessChatUseCase(t *testing.T) {
 
 	t.Run("fetch error", func(t *testing.T) {
 		uc := NewProcessChatUseCase(cfg, nil, nil, nil, cache.NewCacheStore())
-		_, err := uc.ProcessChat(ctx, "non_existent_file.json")
+		_, err := uc.ProcessChat(ctx, []string{"non_existent_file.json"})
 		assert.Error(t, err)
 	})
 
@@ -125,7 +137,7 @@ func TestProcessChatUseCase(t *testing.T) {
 		parseErr := errors.New("parse error")
 		parser.On("Parse", mock.Anything).Return(nil, parseErr)
 
-		_, err := uc.ProcessChat(ctx, filePath)
+		_, err := uc.ProcessChat(ctx, []string{filePath})
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), parseErr.Error())
@@ -143,7 +155,7 @@ func TestProcessChatUseCase(t *testing.T) {
 		parser.On("Parse", mock.Anything).Return(chat, nil)
 		extractor.On("ExtractRawParticipants", chat).Return(nil, extractErr)
 
-		_, err := uc.ProcessChat(ctx, filePath)
+		_, err := uc.ProcessChat(ctx, []string{filePath})
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), extractErr.Error())
@@ -162,9 +174,9 @@ func TestProcessChatUseCase(t *testing.T) {
 
 		parser.On("Parse", mock.Anything).Return(chat, nil)
 		extractor.On("ExtractRawParticipants", chat).Return(rawParticipants, nil)
-		enricher.On("Enrich", ctx, rawParticipants).Return(nil, enrichErr)
+		enricher.On("Enrich", ctx, mock.AnythingOfType("[]domain.RawParticipant")).Return(nil, enrichErr)
 
-		_, err := uc.ProcessChat(ctx, filePath)
+		_, err := uc.ProcessChat(ctx, []string{filePath})
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), enrichErr.Error())

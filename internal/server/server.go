@@ -20,7 +20,7 @@ import (
 
 // ChatProcessor определяет интерфейс для варианта использования, который обрабатывает чаты.
 type ChatProcessor interface {
-	ProcessChat(ctx context.Context, filePath string) ([]domain.User, error)
+	ProcessChat(ctx context.Context, filePaths []string) ([]domain.User, error)
 }
 
 // Server представляет HTTP-сервер
@@ -55,87 +55,70 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 	chiRouter.Route("/api/v1", func(r chi.Router) {
 		// Конечная точка для запуска новой задачи обработки
 		r.Post("/process", func(w http.ResponseWriter, r *http.Request) {
-			// Разбор мультипарт-формы
-			err := r.ParseMultipartForm(cfg.Server.MaxUploadSizeMB << 20)
-			if err != nil {
+			if err := r.ParseMultipartForm(cfg.Server.MaxUploadSizeMB << 20); err != nil {
 				http.Error(w, "Не удалось разобрать форму", http.StatusBadRequest)
 				return
 			}
 
-			file, _, err := r.FormFile("file")
-			if err != nil {
-				http.Error(w, "Не удалось получить файл из формы", http.StatusBadRequest)
+			files := r.MultipartForm.File["files"]
+			if len(files) == 0 {
+				http.Error(w, "Файлы не загружены", http.StatusBadRequest)
 				return
 			}
-			defer file.Close()
 
-			// Генерация уникального идентификатора задачи
 			taskID := uuid.NewString()
-
-			// Создание временного файла для хранения загруженных данных
+			var tempFilePaths []string
 			tempDir := os.TempDir()
-			tempFilePath := filepath.Join(tempDir, fmt.Sprintf("chat_%s.json", taskID))
 
-			out, err := os.Create(tempFilePath)
-			if err != nil {
-				http.Error(w, "Не удалось создать временный файл", http.StatusInternalServerError)
-				return
-			}
-			defer out.Close()
-
-			_, err = io.Copy(out, file)
-			if err != nil {
-				http.Error(w, "Не удалось сохранить загруженный файл", http.StatusInternalServerError)
-				return
-			}
-
-			// Логирование сырого содержимого загруженного файла
-			// Чтение временного файла для логирования его содержимого
-			tempFileContent, readErr := os.ReadFile(tempFilePath)
-			if readErr != nil {
-				slog.Error("Не удалось прочитать временный файл для логирования", "error", readErr, "path", tempFilePath)
-			} else {
-				// Определение локальной функции min для срезов/строк
-				min := func(a, b int) int {
-					if a < b {
-						return a
-					}
-					return b
+			for i, fileHeader := range files {
+				file, err := fileHeader.Open()
+				if err != nil {
+					http.Error(w, "Не удалось открыть загруженный файл", http.StatusInternalServerError)
+					return
 				}
-				slog.Info("Сырое содержимое загруженного файла получено сервером", "file_path", tempFilePath, "content_length", len(tempFileContent), "content_preview", string(tempFileContent[:min(200, len(tempFileContent))]))
+				defer file.Close()
+
+				tempFilePath := filepath.Join(tempDir, fmt.Sprintf("chat_%s_%d.json", taskID, i))
+				tempFilePaths = append(tempFilePaths, tempFilePath)
+
+				out, err := os.Create(tempFilePath)
+				if err != nil {
+					http.Error(w, "Не удалось создать временный файл", http.StatusInternalServerError)
+					return
+				}
+				defer out.Close()
+
+				if _, err := io.Copy(out, file); err != nil {
+					http.Error(w, "Не удалось сохранить загруженный файл", http.StatusInternalServerError)
+					return
+				}
+				slog.Info("Загруженный файл сохранен во временный файл", "path", tempFilePath)
 			}
 
 			// Создание задачи в хранилище
 			taskStore.CreateTask(taskID, cfg.Processing.CacheTTL)
 
 			// Запуск обработки в горутине
-			go func() {
-				// Обновление статуса до "в обработке"
+			go func(paths []string) {
+				defer func() {
+					for _, path := range paths {
+						os.Remove(path)
+					}
+				}()
+
 				taskStore.UpdateTaskStatus(taskID, TaskStatusProcessing)
 
-				// Создание контекста для задачи с таймаутом из конфигурации.
-				taskCtx := context.Background()
-				if cfg.Processing.TaskTimeout > 0 {
-					var cancel context.CancelFunc
-					taskCtx, cancel = context.WithTimeout(context.Background(), cfg.Processing.TaskTimeout)
-					defer cancel()
-				}
+				taskCtx, cancel := context.WithTimeout(context.Background(), cfg.Processing.TaskTimeout)
+				defer cancel()
 
-				// Обработка чата с использованием контекста, который может иметь таймаут.
-				result, err := processor.ProcessChat(taskCtx, tempFilePath)
+				result, err := processor.ProcessChat(taskCtx, paths)
 				if err != nil {
 					taskStore.UpdateTaskError(taskID, err.Error())
-					// Очистка временного файла при ошибке
-					os.Remove(tempFilePath)
 					return
 				}
 
-				// Обновление задачи с результатом
 				taskStore.UpdateTaskResult(taskID, result)
-
-				// Очистка временного файла при успехе
-				os.Remove(tempFilePath)
-			}()
+			}(tempFilePaths)
 
 			// Возврат идентификатора задачи
 			w.Header().Set("Content-Type", "application/json")

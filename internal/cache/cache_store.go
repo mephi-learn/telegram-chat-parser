@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -85,6 +86,13 @@ func (cs *CacheStore) StartCleanupTicker(ctx context.Context, interval time.Dura
 	}()
 }
 
+// CalculateHashFromString вычисляет хеш SHA-256 для строки.
+func CalculateHashFromString(data string) string {
+	h := sha256.New()
+	h.Write([]byte(data))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // CalculateFileHash вычисляет хеш SHA256 содержимого файла
 func CalculateFileHash(filePath string) (string, error) {
 	file, err := os.Open(filePath)
@@ -98,6 +106,5 @@ func CalculateFileHash(filePath string) (string, error) {
 		return "", fmt.Errorf("не удалось прочитать файл: %w", err)
 	}
 
-	hash := fmt.Sprintf("%x", hasher.Sum(nil))
-	return hash, nil
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }

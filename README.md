@@ -175,10 +175,34 @@ go build -o bin/bot cmd/bot/main.go
 Спецификацию OpenAPI для серверного API см. в файле [`api_contracts.yaml`](api_contracts.yaml).
 
 Ключевые эндпоинты:
-*   `POST /api/v1/process`: Загрузка файла для обработки.
+*   `POST /api/v1/process`: Загрузка одного или нескольких файлов для обработки.
 *   `POST /api/v1/process-by-hash`: Запрос на обработку по хешу файла (использует кеш).
 *   `GET /api/v1/tasks/{taskID}`: Получение статуса задачи.
 *   `GET /api/v1/tasks/{taskID}/result`: Получение результата обработки с пагинацией.
+
+#### Примеры использования API
+
+**Запуск обработки нескольких чатов:**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/process \
+  -F "files=@/path/to/chat1.json" \
+  -F "files=@/path/to/chat2.json"
+```
+
+Сервер вернет `task_id`, который можно использовать для получения результата.
+
+**Получение статуса задачи:**
+
+```bash
+curl http://localhost:8080/api/v1/tasks/{your_task_id}
+```
+
+**Получение результата:**
+
+```bash
+curl http://localhost:8080/api/v1/tasks/{your_task_id}/result
+```
 
 ## Разработка
 
