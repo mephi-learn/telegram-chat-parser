@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"telegram-chat-parser/internal/cache"
 	"telegram-chat-parser/internal/domain"
 	"telegram-chat-parser/internal/pkg/config"
@@ -212,39 +213,36 @@ func New(cfg *config.Config, processor ChatProcessor, taskStore *TaskStore, cach
 
 			// Разбор page и pageSize, по умолчанию 1 и 50 соответственно
 			parsedPage := 1
-			parsedPageSize := 50
-			// В реальной реализации вы бы использовали strconv.Atoi и обрабатывали ошибки
-			// Для простоты мы просто проверим, что параметр запроса не пуст, и попытаемся его разобрать
-			if page != "" {
-				// parsedPage, _ = strconv.Atoi(page) // Это упрощение
-				// Пока что мы просто будем использовать значение по умолчанию, если разбор не удался
-			}
-			if pageSize != "" {
-				// parsedPageSize, _ = strconv.Atoi(pageSize) // Это упрощение
-				// Пока что мы просто будем использовать значение по умолчанию, если разбор не удался
+			if p, err := strconv.Atoi(page); err == nil && p > 0 {
+				parsedPage = p
 			}
 
-			// Вычисление смещения
+			parsedPageSize := 50
+			if ps, err := strconv.Atoi(pageSize); err == nil && ps > 0 {
+				parsedPageSize = ps
+			}
+
+			// Вычисление смещения и нарезка данных
+			var paginatedData []domain.User
+			totalItems := len(task.Result)
 			offset := (parsedPage - 1) * parsedPageSize
 
-			// Нарезка данных результата в соответствии с пагинацией
-			startIndex := offset
-			endIndex := offset + parsedPageSize
-
-			if startIndex >= len(task.Result) {
-				// Если startIndex больше или равен длине результата, вернуть пустой срез
-				startIndex = len(task.Result)
-				endIndex = len(task.Result)
+			if offset < totalItems {
+				endIndex := offset + parsedPageSize
+				if endIndex > totalItems {
+					endIndex = totalItems
+				}
+				paginatedData = task.Result[offset:endIndex]
+			} else {
+				// Если смещение за пределами данных, возвращаем пустой срез
+				paginatedData = []domain.User{}
 			}
-			if endIndex > len(task.Result) {
-				endIndex = len(task.Result)
-			}
-
-			paginatedData := task.Result[startIndex:endIndex]
 
 			// Вычисление метаданных пагинации
-			totalItems := len(task.Result)
-			totalPages := (totalItems + parsedPageSize - 1) / parsedPageSize // Округление вверх
+			totalPages := 0
+			if totalItems > 0 {
+				totalPages = (totalItems + parsedPageSize - 1) / parsedPageSize // Округление вверх
+			}
 
 			// Подготовка ответа
 			response := struct {
