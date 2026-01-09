@@ -94,8 +94,6 @@ telegram_api:
       session_file: "tg2.session"
 ```
 
-> **Устаревшие параметры:** Секция `rate_limiter` была полностью удалена. Вместо нее используется секция `enrichment`.
-
 ## Сборка
 
 ```bash
