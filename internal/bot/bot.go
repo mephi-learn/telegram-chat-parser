@@ -25,12 +25,16 @@ import (
 
 const (
 	startCommand = "start"
+	// mediaGroupTimeout - короткий таймаут для сбора всех частей медиагруппы.
+	// Telegram присылает файлы из одной группы как отдельные сообщения почти одновременно.
+	mediaGroupTimeout = 500 * time.Millisecond
 )
 
-// fileBatch представляет собой группу файлов, ожидающих отправки.
+// fileBatch представляет собой группу файлов из одной медиагруппы.
 type fileBatch struct {
-	docs  []*tgbotapi.Document
-	timer *time.Timer
+	docs   []*tgbotapi.Document
+	timer  *time.Timer
+	chatID int64 // chatID нужен для отправки ответа
 }
 
 // Bot представляет собой основной объект Telegram-бота.
@@ -42,13 +46,13 @@ type ServerAPI interface {
 }
 
 type Bot struct {
-	api               *tgbotapi.BotAPI
-	cfg               config.BotConfig
-	serverClient      ServerAPI
-	taskStore         *TaskStore
-	logger            *slog.Logger
-	pendingFiles      map[int64]*fileBatch
-	pendingFilesMutex sync.Mutex
+	api                *tgbotapi.BotAPI
+	cfg                config.BotConfig
+	serverClient       ServerAPI
+	taskStore          *TaskStore
+	logger             *slog.Logger
+	pendingMediaGroups map[string]*fileBatch // key: media_group_id
+	pendingFilesMutex  sync.Mutex
 
 	// Для упрощения тестирования
 	sendMessageFunc      func(msg tgbotapi.Chattable) (tgbotapi.Message, error)
@@ -58,9 +62,6 @@ type Bot struct {
 
 // retryableTransport — это реализация http.RoundTripper, которая делает запросы
 // с телом повторно отправляемыми.
-// Это решает проблему, когда http.Client пытается повторить запрос (например, из-за
-// ошибки http2.ProtocolError), но не может, так как тело запроса (io.Reader)
-// уже было прочитано.
 type retryableTransport struct {
 	transport http.RoundTripper // Обычно это http.DefaultTransport
 }
@@ -69,40 +70,27 @@ type retryableTransport struct {
 // а затем устанавливает поле GetBody, которое позволяет клиенту пересоздавать
 // тело для повторных попыток.
 func (t *retryableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Мы вмешиваемся, только если есть тело и GetBody не установлен.
 	if req.Body != nil && req.GetBody == nil {
-		// io.ReadAll читает тело до конца.
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
 			return nil, err
 		}
-		// Транспорт отвечает за закрытие тела запроса, поэтому мы должны закрыть исходное.
 		if err := req.Body.Close(); err != nil {
 			return nil, err
 		}
-
-		// GetBody — это функция, которая возвращает новый io.ReadCloser для тела.
-		// Она будет вызываться при каждой попытке отправки запроса.
 		req.GetBody = func() (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 		}
-		// Также нужно установить тело для первой попытки.
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
-
-	// Выполняем запрос с использованием нижележащего транспорта.
 	return t.transport.RoundTrip(req)
 }
 
 // NewBot создает и инициализирует новый экземпляр бота.
 func NewBot(cfg config.BotConfig, serverClient ServerAPI, taskStore *TaskStore, logger *slog.Logger) (*Bot, error) {
-	// Создаем кастомный http.Client с поддержкой повторных запросов для отправки файлов.
-	// Это решает проблему с ошибкой "cannot retry err ... after Request.Body was written".
 	retryableAPIClient := &http.Client{
-		// Устанавливаем таймаут из конфигурации.
 		Timeout: time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
 		Transport: &retryableTransport{
-			// Используем стандартный транспорт как основу.
 			transport: http.DefaultTransport,
 		},
 	}
@@ -111,22 +99,20 @@ func NewBot(cfg config.BotConfig, serverClient ServerAPI, taskStore *TaskStore, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bot api: %w", err)
 	}
-	// api.Debug = true // Включаем для отладки
 
 	logger.Info("Authorized on account", slog.String("username", api.Self.UserName))
 
 	b := &Bot{
-		api:          api,
-		cfg:          cfg,
-		serverClient: serverClient,
-		taskStore:    taskStore,
-		logger:       logger,
-		pendingFiles: make(map[int64]*fileBatch),
+		api:                api,
+		cfg:                cfg,
+		serverClient:       serverClient,
+		taskStore:          taskStore,
+		logger:             logger,
+		pendingMediaGroups: make(map[string]*fileBatch),
 	}
 
 	b.sendMessageFunc = b.api.Send
 	b.getFileDirectURLFunc = b.api.GetFileDirectURL
-	// Этот клиент используется для скачивания файлов, ему не нужен retryable transport.
 	b.httpClient = &http.Client{Timeout: 30 * time.Second}
 
 	return b, nil
@@ -135,10 +121,8 @@ func NewBot(cfg config.BotConfig, serverClient ServerAPI, taskStore *TaskStore, 
 // Start запускает основной цикл обработки обновлений от Telegram.
 func (b *Bot) Start(ctx context.Context) {
 	u := tgbotapi.NewUpdate(0)
-	// Таймаут для long-polling должен быть меньше, чем общий таймаут HTTP-клиента,
-	// чтобы избежать обрыва соединения на стороне клиента.
 	u.Timeout = b.cfg.HTTPTimeoutSeconds - 5
-	if u.Timeout < 10 { // Убедимся, что таймаут не слишком короткий
+	if u.Timeout < 10 {
 		u.Timeout = 50
 	}
 
@@ -171,7 +155,6 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
-	// Ответ на любые другие сообщения
 	reply := tgbotapi.NewMessage(msg.Chat.ID, "Пожалуйста, отправьте мне JSON-файл с историей чата, выгруженный из Telegram.")
 	b.sendMessage(reply)
 }
@@ -181,12 +164,9 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 	switch msg.Command() {
 	case startCommand:
 		replyText := fmt.Sprintf("Добро пожаловать! Я бот для анализа истории чатов Telegram.\n\n"+
-			"Просто отправьте мне один или несколько JSON-файлов с историей (до %d шт.), и я извлеку список участников.\n\n"+
-			"Как это работает:\n"+
-			"1. Отправьте первый файл.\n"+
-			"2. У вас будет %d секунды, чтобы отправить остальные.\n"+
-			"3. Бот автоматически соберет все файлы в одну задачу и начнет обработку.\n\n"+
-			"Файлы не сохраняются на сервере и обрабатываются на лету.", b.cfg.MaxFilesPerMessage, b.cfg.FileBatchTimeoutSecs)
+			"Просто отправьте мне один или несколько JSON-файлов с историей (до %d шт.) в одном сообщении, и я извлеку список участников.\n\n"+
+			"Вы можете отправить как одиночный файл, так и группу файлов (альбом).\n\n"+
+			"Файлы не сохраняются на сервере и обрабатываются на лету.", b.cfg.MaxFilesPerMessage)
 		reply := tgbotapi.NewMessage(msg.Chat.ID, replyText)
 		b.sendMessage(reply)
 	default:
@@ -195,12 +175,11 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 	}
 }
 
-// handleDocument обрабатывает входящий документ, используя механизм группировки.
+// handleDocument обрабатывает входящий документ.
 func (b *Bot) handleDocument(ctx context.Context, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	logger := b.logger.With(slog.Int64("chat_id", chatID))
 
-	// 1. Проверяем, нет ли уже активной задачи в обработке.
 	if _, ok := b.taskStore.Get(chatID); ok {
 		logger.Warn("user tried to send a file while a task is already processing")
 		reply := tgbotapi.NewMessage(chatID, "Пожалуйста, подождите завершения предыдущей задачи, прежде чем отправлять новые файлы.")
@@ -208,76 +187,78 @@ func (b *Bot) handleDocument(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
-	b.pendingFilesMutex.Lock()
-	defer b.pendingFilesMutex.Unlock()
-
-	batch, ok := b.pendingFiles[chatID]
-	if !ok {
-		// 2. Это первый файл в потенциальной пачке.
-		logger.Info("first file in a new batch received")
-		b.pendingFiles[chatID] = &fileBatch{
-			docs: []*tgbotapi.Document{msg.Document},
-			timer: time.AfterFunc(time.Duration(b.cfg.FileBatchTimeoutSecs)*time.Second, func() {
-				b.processFileBatch(ctx, chatID)
-			}),
-		}
-		// Отправляем сообщение с предложением добавить еще файлы.
-		replyText := fmt.Sprintf(
-			"Файл '%s' получен. Вы можете отправить еще файлы (до %d шт.) в течение %d секунд для их совместной обработки.",
-			msg.Document.FileName, b.cfg.MaxFilesPerMessage, b.cfg.FileBatchTimeoutSecs,
-		)
-		reply := tgbotapi.NewMessage(chatID, replyText)
-		b.sendMessage(reply)
+	if msg.MediaGroupID == "" {
+		logger.Info("single document received, processing immediately", slog.String("file_name", msg.Document.FileName))
+		go b.processFileBatch(ctx, chatID, []*tgbotapi.Document{msg.Document})
 		return
 	}
 
-	// 3. Это следующий файл в существующей пачке.
-	batch.timer.Stop() // Останавливаем предыдущий таймер.
+	mediaGroupID := msg.MediaGroupID
+	logger = logger.With(slog.String("media_group_id", mediaGroupID))
 
-	// Проверяем превышение лимита файлов
-	if len(batch.docs) >= b.cfg.MaxFilesPerMessage {
-		logger.Warn("file limit exceeded", slog.Int("file_count", len(batch.docs)+1), slog.Int("max_files", b.cfg.MaxFilesPerMessage))
-		reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("Превышен лимит файлов в одном сообщении: %d файлов. Обработка не начата.", b.cfg.MaxFilesPerMessage))
-		b.sendMessage(reply)
-		// Очищаем пачку файлов, чтобы предотвратить обработку при следующем таймауте
-		delete(b.pendingFiles, chatID)
+	b.pendingFilesMutex.Lock()
+	defer b.pendingFilesMutex.Unlock()
+
+	batch, ok := b.pendingMediaGroups[mediaGroupID]
+	if !ok {
+		logger.Info("first file in a new media group received")
+		batch = &fileBatch{
+			docs:   []*tgbotapi.Document{msg.Document},
+			chatID: chatID,
+		}
+		batch.timer = time.AfterFunc(mediaGroupTimeout, func() {
+			b.processMediaGroup(ctx, mediaGroupID)
+		})
+		b.pendingMediaGroups[mediaGroupID] = batch
 		return
 	}
 
 	batch.docs = append(batch.docs, msg.Document)
-	logger.Info("another file added to the batch", slog.Int("file_count", len(batch.docs)))
+	batch.timer.Reset(mediaGroupTimeout)
+	logger.Info("another file added to the media group", slog.Int("file_count", len(batch.docs)))
+}
 
-	// 4. Проверяем лимит файлов.
-	if len(batch.docs) >= b.cfg.MaxFilesPerMessage {
-		logger.Info("file limit reached, processing batch immediately")
-		// Лимит достигнут, немедленно обрабатываем.
-		b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Достигнут лимит в %d файлов. Начинаю обработку...", b.cfg.MaxFilesPerMessage)))
-		go b.processFileBatch(ctx, chatID) // Запускаем в горутине, чтобы не блокировать мьютекс
+// processMediaGroup извлекает пачку файлов медиагруппы и передает ее на обработку.
+func (b *Bot) processMediaGroup(ctx context.Context, mediaGroupID string) {
+	b.pendingFilesMutex.Lock()
+	batch, ok := b.pendingMediaGroups[mediaGroupID]
+	if !ok {
+		b.pendingFilesMutex.Unlock()
+		return
+	}
+	delete(b.pendingMediaGroups, mediaGroupID)
+	b.pendingFilesMutex.Unlock()
+
+	chatID := batch.chatID
+	logger := b.logger.With(slog.Int64("chat_id", chatID), slog.String("media_group_id", mediaGroupID))
+	logger.Info("processing media group batch", slog.Int("file_count", len(batch.docs)))
+
+	if len(batch.docs) > b.cfg.MaxFilesPerMessage {
+		logger.Warn("file limit exceeded for media group", slog.Int("file_count", len(batch.docs)), slog.Int("max_files", b.cfg.MaxFilesPerMessage))
+		reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("Превышен лимит файлов в одном сообщении. Вы отправили %d, а разрешено %d. Обработка отменена.", len(batch.docs), b.cfg.MaxFilesPerMessage))
+		b.sendMessage(reply)
 		return
 	}
 
-	// 5. Сбрасываем таймер.
-	batch.timer.Reset(time.Duration(b.cfg.FileBatchTimeoutSecs) * time.Second)
-	reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("Файл '%s' добавлен в пачку (%d/%d).", msg.Document.FileName, len(batch.docs), b.cfg.MaxFilesPerMessage))
-	b.sendMessage(reply)
+	b.processFileBatch(ctx, chatID, batch.docs)
 }
 
-// processFileBatch собирает файлы из пачки, скачивает их и отправляет на сервер.
-func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
-	b.pendingFilesMutex.Lock()
-	batch, ok := b.pendingFiles[chatID]
-	if !ok {
-		b.pendingFilesMutex.Unlock()
-		return // Пачка уже была обработана
+// processFileBatch скачивает файлы, готовит их и отправляет на сервер для обработки.
+func (b *Bot) processFileBatch(ctx context.Context, chatID int64, docs []*tgbotapi.Document) {
+	if len(docs) == 0 {
+		return
 	}
-	// Удаляем пачку, чтобы избежать повторной обработки.
-	delete(b.pendingFiles, chatID)
-	b.pendingFilesMutex.Unlock()
+	logger := b.logger.With(slog.Int64("chat_id", chatID), slog.Int("file_count", len(docs)))
 
-	logger := b.logger.With(slog.Int64("chat_id", chatID), slog.Int("file_count", len(batch.docs)))
+	if len(docs) > b.cfg.MaxFilesPerMessage {
+		logger.Warn("file limit exceeded for single message", slog.Int("file_count", len(docs)), slog.Int("max_files", b.cfg.MaxFilesPerMessage))
+		reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("Превышен лимит файлов в одном сообщении. Вы отправили %d, а разрешено %d. Обработка отменена.", len(docs), b.cfg.MaxFilesPerMessage))
+		b.sendMessage(reply)
+		return
+	}
+
 	logger.Info("processing file batch")
 
-	// 1. Скачиваем все файлы.
 	var filesToProcess []DocumentFile
 	type fileWithHash struct {
 		doc   *tgbotapi.Document
@@ -286,11 +267,10 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 	}
 	var filesWithHashes []fileWithHash
 
-	for _, doc := range batch.docs {
+	for _, doc := range docs {
 		fileURL, err := b.getFileDirectURLFunc(doc.FileID)
 		if err != nil {
 			logger.Error("failed to get file direct url", slog.String("file_id", doc.FileID), slog.String("error", err.Error()))
-			// Сообщаем пользователю и прекращаем обработку всей пачки
 			b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Не удалось получить доступ к файлу '%s'. Обработка отменена.", doc.FileName)))
 			return
 		}
@@ -302,14 +282,13 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 			return
 		}
 		bodyBytes, err := io.ReadAll(resp.Body)
-		resp.Body.Close() // Теперь можно безопасно закрыть
+		resp.Body.Close()
 		if err != nil {
 			logger.Error("failed to read file content", slog.String("file_name", doc.FileName), slog.String("error", err.Error()))
 			b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Не удалось прочитать содержимое файла '%s'. Обработка отменена.", doc.FileName)))
 			return
 		}
 
-		// Вычисляем хеш содержимого
 		h := sha256.New()
 		h.Write(bodyBytes)
 		hash := fmt.Sprintf("%x", h.Sum(nil))
@@ -321,12 +300,10 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 		})
 	}
 
-	// 2. Сортируем файлы по хешу содержимого для обеспечения детерминированного порядка.
 	sort.Slice(filesWithHashes, func(i, j int) bool {
 		return filesWithHashes[i].hash < filesWithHashes[j].hash
 	})
 
-	// 3. Создаем финальный срез для отправки на сервер, уже отсортированный.
 	for _, fwh := range filesWithHashes {
 		filesToProcess = append(filesToProcess, DocumentFile{
 			Name:    fwh.doc.FileName,
@@ -334,15 +311,14 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 		})
 	}
 
-	// 4. Ставим задачу в очередь на сервере.
-	b.taskStore.Set(chatID, "pending") // Блокируем чат от новых задач
+	b.taskStore.Set(chatID, "pending")
 	b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Начинаю обработку %d файлов...", len(filesToProcess))))
 
 	startResp, err := b.serverClient.StartTask(ctx, filesToProcess)
 	if err != nil {
 		logger.Error("failed to start task on backend", slog.String("error", err.Error()))
 		b.sendMessage(tgbotapi.NewMessage(chatID, "Не удалось начать обработку файлов на сервере. Пожалуйста, попробуйте позже."))
-		b.taskStore.Delete(chatID) // Снимаем блокировку
+		b.taskStore.Delete(chatID)
 		return
 	}
 
@@ -350,7 +326,6 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 	logger = logger.With(slog.String("task_id", taskID))
 	logger.Info("task started on backend")
 
-	// 3. Сохраняем task_id и запускаем опрос.
 	b.taskStore.Set(chatID, taskID)
 	taskStartTime := time.Now()
 	go b.pollTaskStatus(context.Background(), chatID, taskID, taskStartTime)
@@ -358,7 +333,7 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64) {
 
 func (b *Bot) sendMessage(msg tgbotapi.Chattable) error {
 	if _, err := b.sendMessageFunc(msg); err != nil {
-		if !strings.Contains(err.Error(), "bot was blocked by the user") { // Не логируем как ошибку, если бот заблокирован
+		if !strings.Contains(err.Error(), "bot was blocked by the user") {
 			b.logger.Error("failed to send message", "error", err)
 		}
 		return err
@@ -369,7 +344,7 @@ func (b *Bot) sendMessage(msg tgbotapi.Chattable) error {
 // pollTaskStatus асинхронно опрашивает статус задачи на бэкенд-сервере.
 func (b *Bot) pollTaskStatus(ctx context.Context, chatID int64, taskID string, taskStartTime time.Time) {
 	logger := b.logger.With(slog.Int64("chat_id", chatID), slog.String("task_id", taskID))
-	defer b.taskStore.Delete(chatID) // Гарантированно удаляем задачу по завершении.
+	defer b.taskStore.Delete(chatID)
 
 	ticker := time.NewTicker(time.Duration(b.cfg.PollingIntervalSeconds) * time.Second)
 	defer ticker.Stop()
@@ -384,7 +359,6 @@ func (b *Bot) pollTaskStatus(ctx context.Context, chatID int64, taskID string, t
 			status, err := b.serverClient.GetTaskStatus(ctx, taskID)
 			if err != nil {
 				logger.Error("failed to get task status", slog.String("error", err.Error()))
-				// Можно добавить логику ретраев или просто прекратить опрос
 				continue
 			}
 
@@ -392,15 +366,14 @@ func (b *Bot) pollTaskStatus(ctx context.Context, chatID int64, taskID string, t
 			case "completed":
 				logger.Info("task completed")
 				b.processCompletedTask(ctx, chatID, taskID, taskStartTime)
-				return // Завершаем опрос
+				return
 			case "failed":
 				logger.Warn("task failed", slog.String("reason", status.ErrorMessage))
 				reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("Произошла ошибка при обработке файла: %s", status.ErrorMessage))
 				b.sendMessage(reply)
-				return // Завершаем опрос
+				return
 			case "pending", "processing":
 				logger.Debug("task is in progress", slog.String("status", status.Status))
-				// Продолжаем опрос
 			default:
 				logger.Warn("unknown task status", slog.String("status", status.Status))
 			}
@@ -429,7 +402,6 @@ func (b *Bot) processCompletedTask(ctx context.Context, chatID int64, taskID str
 		return
 	}
 
-	// Логика ветвления в зависимости от количества участников
 	if len(users) >= b.cfg.ExcelThreshold {
 		logger.Info("user count is over threshold, sending excel file")
 		b.sendMessage(tgbotapi.NewMessage(chatID, fmt.Sprintf("Найдено %d участников. Формирую Excel-файл...", len(users))))
@@ -446,7 +418,7 @@ func (b *Bot) processCompletedTask(ctx context.Context, chatID int64, taskID str
 func (b *Bot) fetchAllResults(ctx context.Context, taskID string) ([]UserDTO, error) {
 	var allUsers []UserDTO
 	page := 1
-	pageSize := 100 // Запрашиваем по 100, чтобы уменьшить количество запросов
+	pageSize := 100
 
 	for {
 		result, err := b.serverClient.GetTaskResult(ctx, taskID, page, pageSize)
@@ -457,7 +429,7 @@ func (b *Bot) fetchAllResults(ctx context.Context, taskID string) ([]UserDTO, er
 		allUsers = append(allUsers, result.Data...)
 
 		if page >= result.Pagination.TotalPages {
-			break // Все страницы собраны
+			break
 		}
 		page++
 	}
@@ -477,7 +449,6 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO, taskStartTime, send
 	index, _ := f.NewSheet(sheetName)
 	f.SetActiveSheet(index)
 
-	// Заголовки
 	headers := []string{"Дата экспорта", "Username", "Имя и фамилия", "Описание (Bio)"}
 	showChannel := hasChannelData(users)
 	if showChannel {
@@ -489,7 +460,6 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO, taskStartTime, send
 		f.SetCellValue(sheetName, cell, h)
 	}
 
-	// Данные
 	exportDate := time.Now().Format(time.RFC3339)
 	for i, user := range users {
 		row := i + 2
@@ -502,7 +472,6 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO, taskStartTime, send
 		}
 	}
 
-	// Запись в буфер
 	var buf bytes.Buffer
 	if err := f.Write(&buf); err != nil {
 		b.logger.Error("failed to write excel to buffer", slog.String("error", err.Error()))
@@ -510,7 +479,6 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO, taskStartTime, send
 		return
 	}
 
-	// Отправка файла
 	fileName := fmt.Sprintf("chat_participants_%s.xlsx", time.Now().Format("2006-01-02_15-04-05"))
 	fileBytes := tgbotapi.FileBytes{
 		Name:  fileName,
@@ -520,7 +488,6 @@ func (b *Bot) sendExcelResult(chatID int64, users []UserDTO, taskStartTime, send
 	msg := tgbotapi.NewDocument(chatID, fileBytes)
 	msg.Caption = fmt.Sprintf("Анализ завершен. Найдено %d участников.", len(users))
 	if err := b.sendMessage(msg); err != nil {
-		// Ошибка уже залогирована в sendMessage, просто выходим, чтобы не логировать ложный успех.
 		return
 	}
 
@@ -544,9 +511,8 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Найдено %d участников. Вот список:\n", len(users)))
-	sb.WriteString("<pre><code>") // Используем HTML для надежного форматирования
+	sb.WriteString("<pre><code>")
 
-	// Получаем ширину колонок из конфигурации
 	userColWidth := b.cfg.Render.User
 	nameColWidth := b.cfg.Render.Name
 	bioColWidth := b.cfg.Render.Bio
@@ -554,7 +520,6 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 
 	showChannel := hasChannelData(users)
 
-	// Формируем заголовок
 	headerUser := "Username"
 	headerName := "Name"
 	headerBio := "Bio"
@@ -571,7 +536,6 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 	headerLine += "|\n"
 	sb.WriteString(headerLine)
 
-	// Формируем разделитель
 	separatorLine := fmt.Sprintf("|%s|%s|%s",
 		strings.Repeat("-", userColWidth+2),
 		strings.Repeat("-", nameColWidth+2),
@@ -589,17 +553,14 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 			username = "@" + user.Username
 		}
 
-		// 1. Очищаем данные
 		cleanName := strings.ToValidUTF8(user.Name, "")
 		cleanBio := strings.ToValidUTF8(user.Bio, "")
 
-		// 2. Экранируем и убираем исходные переносы
 		name := html.EscapeString(cleanName)
 		name = strings.ReplaceAll(name, "\n", " ")
 		bio := html.EscapeString(cleanBio)
 		bio = strings.ReplaceAll(bio, "\n", " ")
 
-		// 3. Разбиваем строки на несколько с переносом слов
 		usernameLines := wrapString(username, userColWidth)
 		nameLines := wrapString(name, nameColWidth)
 		bioLines := wrapString(bio, bioColWidth)
@@ -622,7 +583,6 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 			maxLines = len(channelLines)
 		}
 
-		// 4. Печатаем строки для текущего пользователя
 		for i := 0; i < maxLines; i++ {
 			userPart := ""
 			if i < len(usernameLines) {
@@ -644,7 +604,6 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 				channelPart = channelLines[i]
 			}
 
-			// Добиваем пробелами до нужной ширины
 			padUser := generatePadding(userPart, userColWidth)
 			padName := generatePadding(namePart, nameColWidth)
 			padBio := generatePadding(bioPart, bioColWidth)
@@ -664,7 +623,6 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 	reply := tgbotapi.NewMessage(chatID, text)
 	reply.ParseMode = tgbotapi.ModeHTML
 
-	// Проверка на максимальную длину сообщения в Telegram (4096 символов)
 	if len(text) > 4096 {
 		b.logger.Warn("сгенерированный текст слишком длинный, отправка в виде файла", "length", len(text))
 		b.sendResultAsTextFile(chatID, users, taskStartTime, sendStartTime)
@@ -690,8 +648,6 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 func generatePadding(s string, colWidth int) string {
 	paddingNeeded := colWidth - runewidth.StringWidth(s)
 
-	// Прагматическая поправка: если в строке есть CJK-символы, добавляем один пробел,
-	// чтобы компенсировать ошибку рендеринга в некоторых клиентах.
 	hasCJK := false
 	for _, r := range s {
 		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hangul, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) {
@@ -711,8 +667,6 @@ func generatePadding(s string, colWidth int) string {
 }
 
 // wrapString wraps a given string to a specified width using runewidth.
-// It prioritizes wrapping on word boundaries (spaces). If a single word is
-// longer than the width, it will be broken mid-word.
 func wrapString(s string, width int) []string {
 	if width <= 0 || runewidth.StringWidth(s) <= width {
 		return []string{s}
@@ -721,7 +675,7 @@ func wrapString(s string, width int) []string {
 	var lines []string
 	words := strings.Fields(s)
 
-	if len(words) == 0 { // Handles strings with only spaces or empty strings
+	if len(words) == 0 {
 		runes := []rune(s)
 		for len(runes) > 0 {
 			i := 0
@@ -747,7 +701,6 @@ func wrapString(s string, width int) []string {
 	for _, word := range words {
 		wordWidth := runewidth.StringWidth(word)
 
-		// Handle words longer than the entire width
 		if wordWidth > width {
 			if currentLine.Len() > 0 {
 				lines = append(lines, currentLine.String())
@@ -772,7 +725,6 @@ func wrapString(s string, width int) []string {
 			continue
 		}
 
-		// If the word doesn't fit on the current line, start a new one
 		lineLen := runewidth.StringWidth(currentLine.String())
 		if lineLen > 0 && lineLen+1+wordWidth > width {
 			lines = append(lines, currentLine.String())
@@ -807,7 +759,6 @@ func (b *Bot) sendResultAsTextFile(chatID int64, users []UserDTO, taskStartTime,
 	var buf bytes.Buffer
 	showChannel := hasChannelData(users)
 
-	// Заголовки для файла
 	headers := []string{"Username", "Name", "Bio"}
 	if showChannel {
 		headers = append(headers, "Channel")
@@ -816,7 +767,6 @@ func (b *Bot) sendResultAsTextFile(chatID int64, users []UserDTO, taskStartTime,
 	buf.WriteString("\n")
 
 	for _, user := range users {
-		// Форматируем как CSV для простоты
 		record := []string{
 			fmt.Sprintf("\"@%s\"", user.Username),
 			fmt.Sprintf("\"%s\"", strings.ReplaceAll(user.Name, "\"", "\"\"")),
@@ -838,7 +788,6 @@ func (b *Bot) sendResultAsTextFile(chatID int64, users []UserDTO, taskStartTime,
 	msg := tgbotapi.NewDocument(chatID, fileBytes)
 	msg.Caption = fmt.Sprintf("Анализ завершен. Найдено %d участников. Список слишком большой для одного сообщения, поэтому он прикреплен в виде файла.", len(users))
 	if err := b.sendMessage(msg); err != nil {
-		// Ошибка уже залогирована в sendMessage, просто выходим, чтобы не логировать ложный успех.
 		return
 	}
 

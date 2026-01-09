@@ -43,13 +43,13 @@ func (m *mockServerClient) GetTaskResult(ctx context.Context, taskID string, pag
 // newTestBot создает бота с моками для тестирования.
 func newTestBot(t *testing.T, cfg config.BotConfig, serverClient ServerAPI) *Bot {
 	bot := &Bot{
-		api:          nil, // Не используется напрямую благодаря мокам
-		cfg:          cfg,
-		serverClient: serverClient,
-		taskStore:    NewTaskStore(),
-		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		pendingFiles: make(map[int64]*fileBatch),
-		httpClient:   http.DefaultClient, // Будет заменен в тестах
+		api:                nil, // Не используется напрямую благодаря мокам
+		cfg:                cfg,
+		serverClient:       serverClient,
+		taskStore:          NewTaskStore(),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		pendingMediaGroups: make(map[string]*fileBatch),
+		httpClient:         http.DefaultClient, // Будет заменен в тестах
 	}
 	// Инициализируем поля-функции пустышками, чтобы избежать nil pointer dereference.
 	// В каждом тесте они будут заменены на нужные моки.
@@ -58,10 +58,9 @@ func newTestBot(t *testing.T, cfg config.BotConfig, serverClient ServerAPI) *Bot
 	return bot
 }
 
-func TestBot_HandleDocument_Batching(t *testing.T) {
+func TestBot_HandleDocument_MediaGroup(t *testing.T) {
 	defaultConfig := config.BotConfig{
 		MaxFilesPerMessage:     3,
-		FileBatchTimeoutSecs:   1, // Короткий таймаут для теста
 		PollingIntervalSeconds: 1, // Положительное значение для тикера
 	}
 
@@ -74,7 +73,54 @@ func TestBot_HandleDocument_Batching(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	t.Run("sends a batch with two files after timeout", func(t *testing.T) {
+	t.Run("sends a media group batch after timeout", func(t *testing.T) {
+		var wg sync.WaitGroup
+		wg.Add(1)
+
+		startTaskCalled := make(chan []DocumentFile, 1)
+
+		mockClient := &mockServerClient{
+			startTaskFunc: func(ctx context.Context, files []DocumentFile) (*StartTaskResponse, error) {
+				// Сортируем файлы по имени для предсказуемости теста
+				sort.Slice(files, func(i, j int) bool {
+					return files[i].Name < files[j].Name
+				})
+				startTaskCalled <- files
+				wg.Done()
+				return &StartTaskResponse{TaskID: "test-task"}, nil
+			},
+		}
+
+		bot := newTestBot(t, defaultConfig, mockClient)
+		bot.httpClient = ts.Client() // Внедряем клиент тестового сервера
+
+		bot.sendMessageFunc = func(msg tgbotapi.Chattable) (tgbotapi.Message, error) { return tgbotapi.Message{}, nil }
+		bot.getFileDirectURLFunc = func(fileID string) (string, error) {
+			return ts.URL + "/" + fileID, nil
+		}
+
+		mediaGroupID := "test-media-group-1"
+		msg1 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 123}, MediaGroupID: mediaGroupID, Document: &tgbotapi.Document{FileID: "file1", FileName: "test1.json"}}
+		msg2 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 123}, MediaGroupID: mediaGroupID, Document: &tgbotapi.Document{FileID: "file2", FileName: "test2.json"}}
+
+		bot.handleDocument(ctx, msg1)
+		time.Sleep(100 * time.Millisecond) // Небольшая задержка между сообщениями
+		bot.handleDocument(ctx, msg2)
+
+		// Ожидаем вызова StartTask после таймаута mediaGroupTimeout
+		wg.Wait()
+
+		select {
+		case files := <-startTaskCalled:
+			assert.Len(t, files, 2)
+			assert.Equal(t, "test1.json", files[0].Name)
+			assert.Equal(t, "test2.json", files[1].Name)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for StartTask to be called")
+		}
+	})
+
+	t.Run("sends a single file immediately", func(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(1)
 
@@ -89,66 +135,21 @@ func TestBot_HandleDocument_Batching(t *testing.T) {
 		}
 
 		bot := newTestBot(t, defaultConfig, mockClient)
-		bot.httpClient = ts.Client() // Внедряем клиент тестового сервера
-
-		bot.sendMessageFunc = func(msg tgbotapi.Chattable) (tgbotapi.Message, error) { return tgbotapi.Message{}, nil }
-		bot.getFileDirectURLFunc = func(fileID string) (string, error) {
-			// Возвращаем URL нашего тестового сервера
-			return ts.URL + "/" + fileID, nil
-		}
-
-		msg1 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 123}, Document: &tgbotapi.Document{FileID: "file1", FileName: "test1.json"}}
-		msg2 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 123}, Document: &tgbotapi.Document{FileID: "file2", FileName: "test2.json"}}
-
-		bot.handleDocument(ctx, msg1)
-		time.Sleep(500 * time.Millisecond)
-		bot.handleDocument(ctx, msg2)
-
-		wg.Wait()
-
-		select {
-		case files := <-startTaskCalled:
-			assert.Len(t, files, 2)
-			assert.Equal(t, "test1.json", files[0].Name)
-			assert.Equal(t, "test2.json", files[1].Name)
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for StartTask to be called")
-		}
-	})
-
-	t.Run("sends a batch immediately when file limit is reached", func(t *testing.T) {
-		var wg sync.WaitGroup
-		wg.Add(1)
-
-		startTaskCalled := make(chan []DocumentFile, 1)
-
-		mockClient := &mockServerClient{
-			startTaskFunc: func(ctx context.Context, files []DocumentFile) (*StartTaskResponse, error) {
-				startTaskCalled <- files
-				wg.Done()
-				return &StartTaskResponse{TaskID: "test-task"}, nil
-			},
-		}
-
-		limitConfig := defaultConfig
-		limitConfig.MaxFilesPerMessage = 2
-		bot := newTestBot(t, limitConfig, mockClient)
 		bot.httpClient = ts.Client()
 
 		bot.sendMessageFunc = func(msg tgbotapi.Chattable) (tgbotapi.Message, error) { return tgbotapi.Message{}, nil }
 		bot.getFileDirectURLFunc = func(fileID string) (string, error) { return ts.URL + "/" + fileID, nil }
 
-		msg1 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 456}, Document: &tgbotapi.Document{FileID: "fileA", FileName: "A.json"}}
-		msg2 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 456}, Document: &tgbotapi.Document{FileID: "fileB", FileName: "B.json"}}
+		msg := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 456}, Document: &tgbotapi.Document{FileID: "fileA", FileName: "A.json"}}
 
-		bot.handleDocument(ctx, msg1)
-		bot.handleDocument(ctx, msg2)
+		bot.handleDocument(ctx, msg) // Вызов без media group id
 
 		wg.Wait()
 
 		select {
 		case files := <-startTaskCalled:
-			assert.Len(t, files, 2)
+			assert.Len(t, files, 1)
+			assert.Equal(t, "A.json", files[0].Name)
 		case <-time.After(1 * time.Second):
 			t.Fatal("timed out waiting for immediate StartTask call")
 		}
@@ -176,53 +177,69 @@ func TestBot_HandleDocument_Batching(t *testing.T) {
 		assert.Contains(t, receivedMessages[0], "Пожалуйста, подождите завершения предыдущей задачи")
 	})
 
-	t.Run("rejects new files if file limit is exceeded", func(t *testing.T) {
-		bot := newTestBot(t, defaultConfig, &mockServerClient{})
+	t.Run("rejects files if media group limit is exceeded", func(t *testing.T) {
+		limitConfig := defaultConfig
+		limitConfig.MaxFilesPerMessage = 2
+		bot := newTestBot(t, limitConfig, &mockServerClient{})
 
 		var receivedMessages []string
+		var mu sync.Mutex // Мьютекс для защиты receivedMessages
+		var startTaskCalled bool
+
 		bot.sendMessageFunc = func(msg tgbotapi.Chattable) (tgbotapi.Message, error) {
 			m, ok := msg.(tgbotapi.MessageConfig)
 			if ok {
+				mu.Lock()
 				receivedMessages = append(receivedMessages, m.Text)
+				mu.Unlock()
 			}
 			return tgbotapi.Message{}, nil
 		}
+		bot.serverClient = &mockServerClient{
+			startTaskFunc: func(ctx context.Context, files []DocumentFile) (*StartTaskResponse, error) {
+				mu.Lock()
+				startTaskCalled = true
+				mu.Unlock()
+				return nil, nil
+			},
+		}
 
 		chatID := int64(999)
+		mediaGroupID := "limit-exceed-group"
 
-		// Добавляем файлы в пачку до лимита
-		bot.pendingFilesMutex.Lock()
-		bot.pendingFiles[chatID] = &fileBatch{
-			docs: []*tgbotapi.Document{
-				{FileID: "file1", FileName: "file1.json"},
-				{FileID: "file2", FileName: "file2.json"},
-				{FileID: "file3", FileName: "file3.json"},
-			},
-			// Создаем таймер, который не будет срабатывать в рамках теста
-			timer: time.NewTimer(time.Hour),
-		}
-		bot.pendingFilesMutex.Unlock()
+		// Отправляем 3 файла, когда лимит 2
+		msg1 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: chatID}, MediaGroupID: mediaGroupID, Document: &tgbotapi.Document{FileID: "file1"}}
+		msg2 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: chatID}, MediaGroupID: mediaGroupID, Document: &tgbotapi.Document{FileID: "file2"}}
+		msg3 := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: chatID}, MediaGroupID: mediaGroupID, Document: &tgbotapi.Document{FileID: "file3"}}
 
-		// Пытаемся добавить еще один файл, превышая лимит
-		msg := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: chatID}, Document: &tgbotapi.Document{FileID: "file4", FileName: "file4.json"}}
-		bot.handleDocument(ctx, msg)
+		bot.handleDocument(ctx, msg1)
+		bot.handleDocument(ctx, msg2)
+		bot.handleDocument(ctx, msg3)
+
+		// Ждем таймаут обработки медиагруппы
+		time.Sleep(mediaGroupTimeout + 100*time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
 
 		require.Len(t, receivedMessages, 1)
-		assert.Contains(t, receivedMessages[0], "Превышен лимит файлов в одном сообщении")
-		assert.Contains(t, receivedMessages[0], "3 файлов")
+		assert.Contains(t, receivedMessages[0], "Превышен лимит файлов")
+		assert.Contains(t, receivedMessages[0], "Вы отправили 3, а разрешено 2")
 
-		// Проверяем, что пачка файлов была удалена после превышения лимита
+		// Проверяем, что обработка не была запущена
+		assert.False(t, startTaskCalled, "StartTask не должен был быть вызван")
+
+		// Проверяем, что пачка была удалена
 		bot.pendingFilesMutex.Lock()
-		_, exists := bot.pendingFiles[chatID]
+		_, exists := bot.pendingMediaGroups[mediaGroupID]
 		bot.pendingFilesMutex.Unlock()
-		assert.False(t, exists, "Пачка файлов должна быть удалена после превышения лимита")
+		assert.False(t, exists, "Пачка медиагруппы должна быть удалена после обработки")
 	})
 }
 
 func TestBot_ProcessFileBatch_Sorting(t *testing.T) {
 	defaultConfig := config.BotConfig{
 		MaxFilesPerMessage:     3,
-		FileBatchTimeoutSecs:   1,
 		PollingIntervalSeconds: 1,
 	}
 
@@ -280,23 +297,14 @@ func TestBot_ProcessFileBatch_Sorting(t *testing.T) {
 		}
 	}
 
-	// Создаем пачку вручную, как это делает handleDocument
-	chatID := int64(123)
-	bot.pendingFilesMutex.Lock()
-	bot.pendingFiles[chatID] = &fileBatch{
-		docs: []*tgbotapi.Document{
-			{FileID: "file2", FileName: "file2.json"},
-			{FileID: "file1", FileName: "file1.json"},
-			{FileID: "file3", FileName: "file3.json"},
-		},
+	// Документы для обработки
+	docs := []*tgbotapi.Document{
+		{FileID: "file2", FileName: "file2.json"},
+		{FileID: "file1", FileName: "file1.json"},
+		{FileID: "file3", FileName: "file3.json"},
 	}
-	bot.pendingFilesMutex.Unlock()
 
-	go func() {
-		// Даем немного времени, чтобы горутина запустилась
-		time.Sleep(100 * time.Millisecond)
-		bot.processFileBatch(ctx, chatID)
-	}()
+	go bot.processFileBatch(ctx, 123, docs)
 
 	wg.Wait()
 

@@ -7,9 +7,8 @@ const (
 	DefaultBioColumnWidth     = 25
 	DefaultChannelColumnWidth = 20
 
-	DefaultMaxFilesPerMessage   = 5
-	DefaultFileBatchTimeoutSecs = 3
-	DefaultHTTPTimeoutSeconds   = 120
+	DefaultMaxFilesPerMessage = 5
+	DefaultHTTPTimeoutSeconds = 120
 
 	// Logging defaults
 	DefaultLogLevel  = "info"
