@@ -55,6 +55,13 @@ func newTestBot(t *testing.T, cfg config.BotConfig, serverClient ServerAPI) *Bot
 	// В каждом тесте они будут заменены на нужные моки.
 	bot.sendMessageFunc = func(msg tgbotapi.Chattable) (tgbotapi.Message, error) { return tgbotapi.Message{}, nil }
 	bot.getFileDirectURLFunc = func(fileID string) (string, error) { return "", nil }
+
+	// Для тестов переопределяем sendMessage, чтобы избежать асинхронности
+	bot.sendMessageOverride = func(msg tgbotapi.Chattable) error {
+		_, err := bot.sendMessageFunc(msg)
+		return err
+	}
+
 	return bot
 }
 
@@ -156,13 +163,19 @@ func TestBot_HandleDocument_MediaGroup(t *testing.T) {
 	})
 
 	t.Run("rejects new files if a task is already processing", func(t *testing.T) {
+		done := make(chan bool, 1) // Канал для синхронизации
+
 		bot := newTestBot(t, defaultConfig, &mockServerClient{})
 
 		var receivedMessages []string
+		var mu sync.Mutex // Мьютекс для защиты receivedMessages
 		bot.sendMessageFunc = func(msg tgbotapi.Chattable) (tgbotapi.Message, error) {
 			m, ok := msg.(tgbotapi.MessageConfig)
 			if ok {
+				mu.Lock()
 				receivedMessages = append(receivedMessages, m.Text)
+				mu.Unlock()
+				done <- true // Сигнализируем о завершении
 			}
 			return tgbotapi.Message{}, nil
 		}
@@ -173,11 +186,23 @@ func TestBot_HandleDocument_MediaGroup(t *testing.T) {
 		msg := &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: chatID}, Document: &tgbotapi.Document{FileID: "fileX", FileName: "X.json"}}
 		bot.handleDocument(ctx, msg)
 
+		// Ждем получения сообщения или таймаут
+		select {
+		case <-done:
+			// Сообщение получено
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for message to be sent")
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
 		require.Len(t, receivedMessages, 1)
 		assert.Contains(t, receivedMessages[0], "Пожалуйста, подождите завершения предыдущей задачи")
 	})
 
 	t.Run("rejects files if media group limit is exceeded", func(t *testing.T) {
+		done := make(chan bool, 1) // Канал для синхронизации
+
 		limitConfig := defaultConfig
 		limitConfig.MaxFilesPerMessage = 2
 		bot := newTestBot(t, limitConfig, &mockServerClient{})
@@ -192,6 +217,7 @@ func TestBot_HandleDocument_MediaGroup(t *testing.T) {
 				mu.Lock()
 				receivedMessages = append(receivedMessages, m.Text)
 				mu.Unlock()
+				done <- true // Сигнализируем о завершении
 			}
 			return tgbotapi.Message{}, nil
 		}
@@ -216,8 +242,13 @@ func TestBot_HandleDocument_MediaGroup(t *testing.T) {
 		bot.handleDocument(ctx, msg2)
 		bot.handleDocument(ctx, msg3)
 
-		// Ждем таймаут обработки медиагруппы
-		time.Sleep(mediaGroupTimeout + 100*time.Millisecond)
+		// Ждем получения сообщения или таймаут
+		select {
+		case <-done:
+			// Сообщение получено
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for message to be sent")
+		}
 
 		mu.Lock()
 		defer mu.Unlock()

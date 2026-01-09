@@ -58,6 +58,7 @@ type Bot struct {
 	sendMessageFunc      func(msg tgbotapi.Chattable) (tgbotapi.Message, error)
 	getFileDirectURLFunc func(fileID string) (string, error)
 	httpClient           *http.Client
+	sendMessageOverride  func(msg tgbotapi.Chattable) error // Для переопределения в тестах
 }
 
 // retryableTransport — это реализация http.RoundTripper, которая делает запросы
@@ -114,6 +115,7 @@ func NewBot(cfg config.BotConfig, serverClient ServerAPI, taskStore *TaskStore, 
 	b.sendMessageFunc = b.api.Send
 	b.getFileDirectURLFunc = b.api.GetFileDirectURL
 	b.httpClient = &http.Client{Timeout: 30 * time.Second}
+	b.sendMessageOverride = nil // По умолчанию используем стандартную логику
 
 	return b, nil
 }
@@ -332,6 +334,9 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64, docs []*tgbota
 }
 
 func (b *Bot) sendMessage(msg tgbotapi.Chattable) error {
+	if b.sendMessageOverride != nil {
+		return b.sendMessageOverride(msg)
+	}
 	return b.sendMessageWithRetry(context.Background(), msg)
 }
 

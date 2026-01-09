@@ -32,6 +32,7 @@ func TestTokenMaskerHandler_Handle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel() // Добавляем параллельное выполнение для выявления гонок
 			var buf bytes.Buffer
 			originalHandler := slog.NewJSONHandler(&buf, nil)
 			maskerHandler := NewTokenMaskerHandler(originalHandler)

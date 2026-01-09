@@ -33,21 +33,25 @@ func (h *TokenMaskerHandler) Enabled(ctx context.Context, level slog.Level) bool
 
 // Handle реализует интерфейс slog.Handler
 func (h *TokenMaskerHandler) Handle(ctx context.Context, record slog.Record) error {
-	// Маскируем сообщение записи
-	maskedRecord := slog.Record{
-		Time:    record.Time,
-		Level:   record.Level,
-		Message: maskTokens(record.Message),
-	}
+	// Создаем полную, изолированную копию записи.
+	// Это предотвращает гонку данных, так как мы больше не работаем
+	// с оригинальной записью, которую slog может переиспользовать.
+	// Метод Clone() также обнуляет атрибуты в копии, поэтому их нужно добавить заново.
+	r := record.Clone()
 
-	// Маскируем атрибуты
-	record.Attrs(func(attr slog.Attr) bool {
-		maskedValue := maskAttributeValue(attr.Value)
-		maskedRecord.AddAttrs(slog.Any(attr.Key, maskedValue))
+	// Маскируем основное сообщение.
+	r.Message = maskTokens(r.Message)
+
+	// Итерируемся по атрибутам оригинальной записи и добавляем их маскированные версии в клон.
+	record.Attrs(func(a slog.Attr) bool {
+		r.AddAttrs(slog.Attr{
+			Key:   a.Key,
+			Value: maskAttributeValue(a.Value),
+		})
 		return true
 	})
 
-	return h.handler.Handle(ctx, maskedRecord)
+	return h.handler.Handle(ctx, r)
 }
 
 // WithAttrs реализует интерфейс slog.Handler
