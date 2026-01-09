@@ -13,4 +13,9 @@ const (
 	// Logging defaults
 	DefaultLogLevel  = "info"
 	DefaultLogFormat = "json"
+
+	// Retry defaults
+	DefaultRetryMaxAttempts     = 3
+	DefaultRetryInitialInterval = 2
+	DefaultRetryMaxInterval     = 30
 )

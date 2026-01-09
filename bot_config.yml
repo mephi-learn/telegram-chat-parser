@@ -15,9 +15,14 @@ bot:
     bio: 30     # Ширина колонки с описанием (bio) пользователя.
     channel: 25 # Ширина колонки с названием канала.
 
+  retry:
+    max_attempts: 3
+    initial_interval_seconds: 2
+    max_interval_seconds: 30
+
 # Настройки логирования
 logging:
   # Уровень логирования: "debug", "info", "warn", "error".
   level: "info"
   # Формат логирования: "text", "json". По умолчанию: "json".
-  format: "text"
+  format: "json"

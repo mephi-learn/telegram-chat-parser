@@ -332,13 +332,82 @@ func (b *Bot) processFileBatch(ctx context.Context, chatID int64, docs []*tgbota
 }
 
 func (b *Bot) sendMessage(msg tgbotapi.Chattable) error {
-	if _, err := b.sendMessageFunc(msg); err != nil {
-		if !strings.Contains(err.Error(), "bot was blocked by the user") {
-			b.logger.Error("failed to send message", "error", err)
-		}
-		return err
+	return b.sendMessageWithRetry(context.Background(), msg)
+}
+
+// isRetryableError проверяет, является ли ошибка временной и стоит ли повторять запрос.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
 	}
-	return nil
+	// Примеры временных сетевых ошибок.
+	// Этот список можно расширять.
+	errStr := err.Error()
+	return strings.Contains(errStr, "Client.Timeout exceeded") ||
+		strings.Contains(errStr, "context deadline exceeded") ||
+		strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "unexpected EOF")
+}
+
+func (b *Bot) sendMessageWithRetry(ctx context.Context, msg tgbotapi.Chattable) error {
+	var lastErr error
+
+	initialInterval := time.Duration(b.cfg.Retry.InitialIntervalSeconds) * time.Second
+	maxInterval := time.Duration(b.cfg.Retry.MaxIntervalSeconds) * time.Second
+	currentInterval := initialInterval
+
+	for attempt := 0; attempt < b.cfg.Retry.MaxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		_, err := b.sendMessageFunc(msg)
+		if err == nil {
+			return nil // Успешная отправка
+		}
+
+		lastErr = err
+
+		// Не повторяем, если пользователь заблокировал бота.
+		if strings.Contains(err.Error(), "bot was blocked by the user") {
+			b.logger.Warn("message not sent because bot was blocked by the user")
+			return err
+		}
+
+		// Повторяем только определенные временные ошибки.
+		if !isRetryableError(err) {
+			b.logger.Error("failed to send message due to non-retryable error", "error", err)
+			return err
+		}
+
+		b.logger.Warn(
+			"failed to send message, retrying...",
+			"attempt", attempt+1,
+			"max_attempts", b.cfg.Retry.MaxAttempts,
+			"retry_after", currentInterval,
+			"error", err,
+		)
+
+		// Ждем перед следующей попыткой.
+		timer := time.NewTimer(currentInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+
+		// Экспоненциальная задержка.
+		currentInterval *= 2
+		if currentInterval > maxInterval {
+			currentInterval = maxInterval
+		}
+	}
+
+	b.logger.Error("failed to send message after all attempts", "last_error", lastErr)
+	return fmt.Errorf("failed to send message after %d attempts: %w", b.cfg.Retry.MaxAttempts, lastErr)
 }
 
 // pollTaskStatus асинхронно опрашивает статус задачи на бэкенд-сервере.
@@ -629,8 +698,8 @@ func (b *Bot) sendTextResult(chatID int64, users []UserDTO, taskStartTime, sendS
 		return
 	}
 
-	if _, err := b.api.Send(reply); err != nil {
-		b.logger.Error("не удалось отправить текстовый результат", "error", err.Error())
+	if err := b.sendMessageWithRetry(context.Background(), reply); err != nil {
+		b.logger.Error("не удалось отправить текстовый результат", "error", err)
 		return
 	}
 

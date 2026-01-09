@@ -8,9 +8,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
 	"telegram-chat-parser/cmd/bot/config"
 	"telegram-chat-parser/internal/bot"
-	"telegram-chat-parser/internal/log"
+	maskedlog "telegram-chat-parser/internal/log"
 )
 
 func main() {
@@ -47,8 +49,13 @@ func main() {
 		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
 
-	logger := log.NewMaskedLogger(handler)
+	logger := maskedlog.NewMaskedLogger(handler)
 	slog.SetDefault(logger)
+
+	// Устанавливаем наш кастомный логгер для библиотеки tgbotapi.
+	// Это гарантирует, что все её логи будут проходить через наш обработчик
+	// и маскировщик токенов.
+	tgbotapi.SetLogger(&maskedlog.TGBotAPIAdapter{Logger: logger.With("component", "tgbotapi")})
 
 	// Инициализация компонентов
 	taskStore := bot.NewTaskStore()

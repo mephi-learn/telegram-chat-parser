@@ -15,6 +15,13 @@ type ColumnWidths struct {
 	Channel int `yaml:"channel"`
 }
 
+// RetryConfig определяет параметры для повторных попыток отправки сообщений.
+type RetryConfig struct {
+	MaxAttempts            int `yaml:"max_attempts"`
+	InitialIntervalSeconds int `yaml:"initial_interval_seconds"`
+	MaxIntervalSeconds     int `yaml:"max_interval_seconds"`
+}
+
 // BotConfig содержит конфигурацию для Telegram-бота
 type BotConfig struct {
 	Token                  string       `yaml:"token"`
@@ -24,6 +31,7 @@ type BotConfig struct {
 	MaxFilesPerMessage     int          `yaml:"max_files_per_message"`
 	HTTPTimeoutSeconds     int          `yaml:"http_timeout_seconds"`
 	Render                 ColumnWidths `yaml:"render"`
+	Retry                  RetryConfig  `yaml:"retry"`
 }
 
 // Logging содержит конфигурацию логирования
@@ -71,6 +79,18 @@ func LoadBotConfig(filename string) (*Config, error) {
 		botCfg.Render.Channel = DefaultChannelColumnWidth
 	}
 
+	// Устанавливаем значения по умолчанию для retry
+	retryCfg := &botCfg.Retry
+	if retryCfg.MaxAttempts == 0 {
+		retryCfg.MaxAttempts = DefaultRetryMaxAttempts
+	}
+	if retryCfg.InitialIntervalSeconds == 0 {
+		retryCfg.InitialIntervalSeconds = DefaultRetryInitialInterval
+	}
+	if retryCfg.MaxIntervalSeconds == 0 {
+		retryCfg.MaxIntervalSeconds = DefaultRetryMaxInterval
+	}
+
 	// Устанавливаем значения по умолчанию для логирования
 	logging := &cfg.Logging
 	if logging.Level == "" {
@@ -99,6 +119,15 @@ func (c *BotConfig) Validate() error {
 	}
 	if c.MaxFilesPerMessage <= 0 {
 		return fmt.Errorf("bot.max_files_per_message must be positive")
+	}
+	if c.Retry.MaxAttempts <= 0 {
+		return fmt.Errorf("bot.retry.max_attempts must be positive")
+	}
+	if c.Retry.InitialIntervalSeconds <= 0 {
+		return fmt.Errorf("bot.retry.initial_interval_seconds must be positive")
+	}
+	if c.Retry.MaxIntervalSeconds < c.Retry.InitialIntervalSeconds {
+		return fmt.Errorf("bot.retry.max_interval_seconds must be greater than or equal to initial_interval_seconds")
 	}
 	return nil
 }

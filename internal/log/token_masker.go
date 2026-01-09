@@ -76,6 +76,13 @@ func maskAttributeValue(value slog.Value) slog.Value {
 	switch value.Kind() {
 	case slog.KindString:
 		return slog.StringValue(maskTokens(value.String()))
+	case slog.KindAny:
+		// Это основной фикс: мы проверяем, не является ли значение ошибкой.
+		// Если да, то преобразуем ошибку в строку и маскируем ее.
+		if err, ok := value.Any().(error); ok {
+			return slog.StringValue(maskTokens(err.Error()))
+		}
+		return value
 	case slog.KindGroup:
 		group := value.Group()
 		maskedGroup := make([]slog.Attr, len(group))
