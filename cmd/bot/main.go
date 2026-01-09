@@ -9,11 +9,13 @@ import (
 
 	"telegram-chat-parser/cmd/bot/config"
 	"telegram-chat-parser/internal/bot"
+	"telegram-chat-parser/internal/log"
 )
 
 func main() {
-	// Инициализация логгера
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// Инициализация логгера с маскировкой токенов
+	handler := slog.NewJSONHandler(os.Stdout, nil)
+	logger := log.NewMaskedLogger(handler)
 	slog.SetDefault(logger)
 
 	// Загрузка конфигурации бота
