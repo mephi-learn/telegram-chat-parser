@@ -46,7 +46,14 @@ func run() error {
 	default:
 		level = slog.LevelInfo
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+
+	var logger *slog.Logger
+	switch cfg.Logging.Format {
+	case "text":
+		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	default:
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	}
 	slog.SetDefault(logger)
 
 	// 3. Валидация конфигурации (после инициализации логгера)

@@ -10,4 +10,8 @@ const (
 	DefaultMaxFilesPerMessage   = 5
 	DefaultFileBatchTimeoutSecs = 3
 	DefaultHTTPTimeoutSeconds   = 120
+
+	// Logging defaults
+	DefaultLogLevel  = "info"
+	DefaultLogFormat = "json"
 )

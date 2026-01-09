@@ -52,7 +52,8 @@ type Enrichment struct {
 
 // Logging содержит конфигурацию логирования
 type Logging struct {
-	Level string `yaml:"level"` // debug, info, warn, error
+	Level  string `yaml:"level"`  // debug, info, warn, error
+	Format string `yaml:"format"` // json, text
 }
 
 // Config содержит конфигурацию приложения
@@ -82,6 +83,7 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
 
+	cfg.SetDefaults()
 	return cfg, nil
 }
 
@@ -101,6 +103,13 @@ func loadFromYAML(filename string, cfg *Config) error {
 	}
 
 	return nil
+}
+
+// SetDefaults устанавливает значения по умолчанию для конфигурации
+func (c *Config) SetDefaults() {
+	if c.Logging.Format == "" {
+		c.Logging.Format = DefaultLogFormat
+	}
 }
 
 func defaultConfig() *Config {
@@ -128,7 +137,8 @@ func defaultConfig() *Config {
 			OperationTimeout: DefaultEnrichmentOperationTimeout,
 		},
 		Logging: Logging{
-			Level: DefaultLogLevel,
+			Level:  DefaultLogLevel,
+			Format: DefaultLogFormat,
 		},
 	}
 }
@@ -192,6 +202,13 @@ func (c *Config) Validate() error {
 		// all good
 	default:
 		return fmt.Errorf("logging.level must be one of: debug, info, warn, error")
+	}
+
+	switch c.Logging.Format {
+	case "", "text", "json":
+		// all good
+	default:
+		return fmt.Errorf("logging.format must be one of: text, json (empty means text)")
 	}
 
 	return nil

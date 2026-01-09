@@ -15,3 +15,10 @@ bot:
     name: 24
     bio: 30
     channel: 25
+
+# Настройки логирования
+logging:
+  # Уровень логирования: "debug", "info", "warn", "error".
+  level: "info"
+  # Формат логирования: "text", "json". По умолчанию: "json".
+  format: "text"

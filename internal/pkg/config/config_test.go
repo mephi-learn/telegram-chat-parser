@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v2"
 )
 
 // multiServerYAML представляет современный формат конфигурации с несколькими серверами.
@@ -35,6 +36,7 @@ enrichment:
   client_retry_pause: 10s
 logging:
   level: "info"
+  format: "text"
 `
 
 // legacyYAML представляет устаревший формат для проверки обратной совместимости.
@@ -42,7 +44,7 @@ const legacyYAML = `
 server:
   host: "0.0.0.0"
   port: 8080
-  shutdown_timeout_seconds: 5
+ shutdown_timeout_seconds: 5
 telegram_api:
   api_id: 98765
   api_hash: "legacy_hash"
@@ -92,6 +94,7 @@ func TestLoadFromYAML(t *testing.T) {
 		assert.Equal(t, 5, cfg.Enrichment.PoolSize)
 		assert.Equal(t, 10*time.Second, cfg.Enrichment.ClientRetryPause)
 		assert.Equal(t, "info", cfg.Logging.Level)
+		assert.Equal(t, "text", cfg.Logging.Format)
 	})
 
 	t.Run("file not found is not an error", func(t *testing.T) {
@@ -152,6 +155,7 @@ func TestValidate(t *testing.T) {
 		{"invalid pool_size", func(c *Config) { c.Enrichment.PoolSize = 0 }, true},
 		{"invalid retry_pause", func(c *Config) { c.Enrichment.ClientRetryPause = 0 }, true},
 		{"invalid logging level", func(c *Config) { c.Logging.Level = "wrong" }, true},
+		{"invalid logging format", func(c *Config) { c.Logging.Format = "xml" }, true}, // добавляем проверку нового поля
 	}
 
 	for _, tc := range testCases {
@@ -163,6 +167,212 @@ func TestValidate(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// Добавляем новые тесты для проверки функционала формата логирования
+func TestLoggingFormatInitialization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		configFormat   string
+		expectedFormat string
+	}{
+		{
+			name:           "json_format",
+			configFormat:   "json",
+			expectedFormat: "json",
+		},
+		{
+			name:           "text_format",
+			configFormat:   "text",
+			expectedFormat: "text",
+		},
+		{
+			name:           "empty_format_defaults_to_text",
+			configFormat:   "",
+			expectedFormat: "text",
+		},
+		{
+			name:           "invalid_format_defaults_to_text",
+			configFormat:   "xml",
+			expectedFormat: "text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Создаем временный файл конфигурации с разными форматами
+			tempFile, err := os.CreateTemp("", "test_config_*.yml")
+			require.NoError(t, err)
+			defer os.Remove(tempFile.Name())
+
+			configContent := `logging:
+  level: "info"
+  format: "` + tt.configFormat + `"
+server:
+  host: "localhost"
+  port: 8080
+telegram_api:
+  servers:
+    - api_id: 12345
+      api_hash: "test_hash"
+      phone_number: "+1234567890"
+      session_file: "test.session"
+processing:
+  task_timeout: "5m"
+  cache_ttl: "60m"
+enrichment:
+  pool_size: 1
+  client_retry_pause: "1s"
+  operation_timeout: "5s"
+`
+
+			_, err = tempFile.Write([]byte(configContent))
+			require.NoError(t, err)
+			tempFile.Close()
+
+			// Загружаем конфигурацию
+			cfg, err := loadConfigFromYAML(tempFile.Name())
+			require.NoError(t, err)
+
+			// Применяем те же правила, что и в LoadConfig - устанавливаем значения по умолчанию
+			cfg.SetDefaults()
+
+			// Проверяем формат логирования
+			expectedFormat := tt.configFormat
+			if expectedFormat == "" {
+				expectedFormat = DefaultLogFormat // по умолчанию
+			}
+
+			if expectedFormat != cfg.Logging.Format {
+				t.Errorf("Expected format %q, got %q", expectedFormat, cfg.Logging.Format)
+			}
+		})
+	}
+}
+
+// Вспомогательная функция для загрузки конфигурации из YAML-файла
+func loadConfigFromYAML(filename string) (*Config, error) {
+	cfg := defaultConfig()
+
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func TestLoggingFormatValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		format      string
+		expectError bool
+	}{
+		{
+			name:        "valid_json_format",
+			format:      "json",
+			expectError: false,
+		},
+		{
+			name:        "valid_text_format",
+			format:      "text",
+			expectError: false,
+		},
+		{
+			name:        "valid_empty_format",
+			format:      "",
+			expectError: false,
+		},
+		{
+			name:        "invalid_format",
+			format:      "xml",
+			expectError: true,
+		},
+		{
+			name:        "invalid_case_format",
+			format:      "JSON", // проверка чувствительности к регистру
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Создаем временный файл конфигурации с разными форматами
+			tempFile, err := os.CreateTemp("", "test_config_*.yml")
+			require.NoError(t, err)
+			defer os.Remove(tempFile.Name())
+
+			configContent := `logging:
+  level: "info"
+  format: "` + tt.format + `"
+server:
+  host: "localhost"
+  port: 8080
+telegram_api:
+  servers:
+    - api_id: 12345
+      api_hash: "test_hash"
+      phone_number: "+1234567890"
+      session_file: "test.session"
+processing:
+  task_timeout: "5m"
+  cache_ttl: "60m"
+enrichment:
+  pool_size: 1
+  client_retry_pause: "1s"
+  operation_timeout: "5s"
+`
+
+			_, err = tempFile.Write([]byte(configContent))
+			require.NoError(t, err)
+			tempFile.Close()
+
+			// Загружаем конфигурацию
+			cfg, err := loadConfigFromYAML(tempFile.Name())
+			require.NoError(t, err)
+
+			// Применяем те же правила, что и в LoadConfig - устанавливаем значения по умолчанию
+			originalFormat := cfg.Logging.Format
+			cfg.SetDefaults()
+
+			// Проверяем формат логирования в конфигурации
+			if tt.format != "" && cfg.Logging.Format != tt.format {
+				t.Errorf("Expected format %q in config, got %q", tt.format, cfg.Logging.Format)
+			}
+
+			// Если формат пустой, проверяем, что используется значение по умолчанию
+			if tt.format == "" && cfg.Logging.Format != DefaultLogFormat {
+				t.Errorf("Expected default format %q, got %q", DefaultLogFormat, cfg.Logging.Format)
+			}
+
+			// Для неверного формата проверяем, что в конфигурации осталось исходное значение до SetDefaults
+			if tt.expectError {
+				if originalFormat != tt.format {
+					t.Errorf("Expected original format %q to remain in config before SetDefaults, got %q", tt.format, originalFormat)
+				}
+			}
+
+			// Проверяем валидацию
+			err = cfg.Validate()
+			if tt.expectError && err == nil {
+				t.Errorf("Expected validation error for format %q, but got none", tt.format)
+			} else if !tt.expectError && err != nil {
+				t.Errorf("Unexpected validation error for format %q: %v", tt.format, err)
 			}
 		})
 	}

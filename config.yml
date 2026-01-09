@@ -29,7 +29,7 @@ telegram_api:
       session_file: "tg.session"
       # Задержка между запросами для одного клиента. 0 - без задержки.
       # Рекомендуемое значение для избежания флуда: 500ms.
-      request_delay: "300ms"
+      request_delay: "500ms"
 
 # Конфигурация обработки задач
 processing:
@@ -52,3 +52,5 @@ enrichment:
 logging:
   # Уровень логирования: "debug", "info", "warn", "error".
   level: "debug"
+  # Формат логирования: "text", "json". По умолчанию: "json".
+  format: "text"

@@ -28,5 +28,6 @@ const (
 	DefaultEnrichmentOperationTimeout = 5 * time.Second
 
 	// Logging defaults
-	DefaultLogLevel = "info"
+	DefaultLogLevel  = "info"
+	DefaultLogFormat = "json"
 )
