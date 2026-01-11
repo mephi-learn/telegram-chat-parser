@@ -1,30 +1,40 @@
-# Dockerfile for telegram-chat-parser
+# Этап сборки
+FROM golang:1.24-alpine AS builder
 
-# Build stage
-FROM golang:1.22-alpine AS builder
-
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Copy go.mod and go.sum files
-COPY go.mod ./
-# Download dependencies
+# Копируем файлы go.mod и go.sum для кэширования зависимостей
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the source code
+# Копируем остальной исходный код
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /telegram-chat-parser ./cmd/telegram-chat-parser
+# Собираем бинарник сервера со статичной линковкой и без отладочной информации
+RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /server ./cmd/server/main.go
 
-# Final stage
-FROM alpine:latest
+# Собираем бинарник бота
+RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /bot ./cmd/bot/main.go
 
-RUN apk --no-cache add ca-certificates
 
-WORKDIR /root/
+# Финальный этап для сервера
+FROM alpine:latest AS server
+WORKDIR /app
+# Копируем бинарник из этапа сборки
+COPY --from=builder /server .
+# Копируем CA-сертификаты для HTTPS-запросов
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Команда для запуска
+CMD ["/app/server"]
 
-# Copy the binary from the builder stage
-COPY --from=builder /telegram-chat-parser .
 
-# Command to run the application
-CMD ["./telegram-chat-parser"]
+# Финальный этап для бота
+FROM alpine:latest AS bot
+WORKDIR /app
+# Копируем бинарник из этапа сборки
+COPY --from=builder /bot .
+# Копируем CA-сертификаты для HTTPS-запросов
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Команда для запуска
+CMD ["/app/bot"]

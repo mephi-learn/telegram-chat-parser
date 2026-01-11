@@ -1,6 +1,6 @@
 bot:
   token: "8462697481:AAEJSXuTcb2F1Js2sWiK0TVWvxbHL9xX05Q" # Заменить на реальный токен
-  backend_url: "http://localhost:8080" # URL бэкенд-сервера
+  backend_url: "http://server:8080" # URL бэкенд-сервера
   polling_interval_seconds: 5   # Интервал в секундах для long-polling запросов к Telegram API. Определяет, как долго бот ждет новых сообщений.
   excel_threshold: 50           # Порог количества записей, при превышении которого результат будет отправлен в виде Excel-файла, а не текста.
   max_files_per_message: 5      # Максимальное количество файлов в одном сообщении от пользователя.
