@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"telegram-chat-parser/internal/domain"
 	"testing"
 )
 
@@ -12,48 +13,58 @@ func TestJsonParser(t *testing.T) {
 		}
 	})
 
-	t.Run("Разбор корректного JSON", func(t *testing.T) {
+	t.Run("Разбор корректного JSON с авторами и упоминаниями", func(t *testing.T) {
 		parser := &JsonParser{}
 		testData := `{
 			"name": "Test Chat",
-			"type": "private_group",
-			"id": 12345,
 			"messages": [
 				{
-					"id": 1,
-					"type": "message",
-					"date": "2023-01-01T00:00:00",
-					"from": "John Doe",
-					"from_id": "user123",
-					"text": "Hello, World!",
+					"id": 1, "type": "message", "from": "John Doe", "from_id": "user123",
+					"text_entities": [{"type": "mention", "text": "@jane_doe"}]
+				},
+				{
+					"id": 2, "type": "message", "from": "Peter Jones", "from_id": "user456",
+					"text_entities": []
+				},
+				{
+					"id": 3, "type": "message", "from": "John Doe", "from_id": "user123",
+					"text_entities": [{"type": "mention", "text": "@peter_jones"}]
+				},
+				{
+					"id": 4, "type": "service", "actor": "Peter Jones", "actor_id": "user456",
 					"text_entities": []
 				}
 			]
 		}`
 
-		chat, err := parser.Parse([]byte(testData))
+		participants, err := parser.Parse([]byte(testData))
 		if err != nil {
-			t.Errorf("Неожиданная ошибка: %v", err)
+			t.Fatalf("Неожиданная ошибка: %v", err)
 		}
 
-		if chat.Name != "Test Chat" {
-			t.Errorf("Ожидалось имя 'Test Chat', получено '%s'", chat.Name)
+		expected := []domain.RawParticipant{
+			{UserID: "user123", Name: "John Doe"},
+			{Username: "@jane_doe"},
+			{UserID: "user456", Name: "Peter Jones"},
+			{Username: "@peter_jones"},
 		}
 
-		if chat.Type != "private_group" {
-			t.Errorf("Ожидался тип 'private_group', получено '%s'", chat.Type)
+		if len(participants) != len(expected) {
+			t.Fatalf("Ожидалось %d участников, получено %d", len(expected), len(participants))
 		}
 
-		if chat.ID != 12345 {
-			t.Errorf("Ожидался ID 12345, получено %d", chat.ID)
+		// Проверяем наличие всех ожидаемых участников
+		foundMap := make(map[string]bool)
+		for _, p := range participants {
+			key := p.UserID + p.Name + p.Username
+			foundMap[key] = true
 		}
 
-		if len(chat.Messages) != 1 {
-			t.Errorf("Ожидалось 1 сообщение, получено %d", len(chat.Messages))
-		}
-
-		if chat.Messages[0].ID != 1 {
-			t.Errorf("Ожидался ID первого сообщения 1, получено %d", chat.Messages[0].ID)
+		for _, e := range expected {
+			key := e.UserID + e.Name + e.Username
+			if !foundMap[key] {
+				t.Errorf("Ожидаемый участник не найден: %+v", e)
+			}
 		}
 	})
 
@@ -61,74 +72,27 @@ func TestJsonParser(t *testing.T) {
 		parser := &JsonParser{}
 		invalidData := `{"name": "Test Chat", "invalid_json":}`
 
-		chat, err := parser.Parse([]byte(invalidData))
+		participants, err := parser.Parse([]byte(invalidData))
 		if err == nil {
 			t.Error("Ожидалась ошибка для некорректного JSON, получено nil")
 		}
 
-		if chat != nil {
-			t.Error("Ожидался nil чат для некорректного JSON, получен чат")
+		if participants != nil {
+			t.Errorf("Ожидался nil срез участников, получено %d", len(participants))
 		}
 	})
 
-	t.Run("Разбор пустого JSON возвращает ошибку", func(t *testing.T) {
+	t.Run("Разбор JSON без сообщений возвращает пустой срез", func(t *testing.T) {
 		parser := &JsonParser{}
-		emptyData := ``
+		testData := `{"name": "Test Chat", "messages": []}`
 
-		chat, err := parser.Parse([]byte(emptyData))
-		if err == nil {
-			t.Error("Ожидалась ошибка для пустого JSON, получено nil")
-		}
-
-		if chat != nil {
-			t.Error("Ожидался nil чат для пустого JSON, получен чат")
-		}
-	})
-
-	t.Run("Разбор JSON с вложенными структурами", func(t *testing.T) {
-		parser := &JsonParser{}
-		testData := `{
-			"name": "Test Chat",
-			"type": "private_group",
-			"id": 12345,
-			"messages": [
-				{
-					"id": 1,
-					"type": "message",
-					"date": "2023-01-01T00:00:00",
-					"from": "John Doe",
-					"from_id": "user123",
-					"text": ["part1", "part2"],
-					"text_entities": [
-						{
-							"type": "mention",
-							"text": "@testuser"
-						}
-					]
-				}
-			]
-		}`
-
-		chat, err := parser.Parse([]byte(testData))
+		participants, err := parser.Parse([]byte(testData))
 		if err != nil {
-			t.Errorf("Неожиданная ошибка: %v", err)
+			t.Fatalf("Неожиданная ошибка: %v", err)
 		}
 
-		if chat.Name != "Test Chat" {
-			t.Errorf("Ожидалось имя 'Test Chat', получено '%s'", chat.Name)
-		}
-
-		if len(chat.Messages) != 1 {
-			t.Errorf("Ожидалось 1 сообщение, получено %d", len(chat.Messages))
-		}
-
-		if len(chat.Messages[0].TextEntities) != 1 {
-			t.Errorf("Ожидалась 1 текстовая сущность, получено %d", len(chat.Messages[0].TextEntities))
-		}
-
-		if chat.Messages[0].TextEntities[0].Type != "mention" {
-			t.Errorf("Ожидался тип первой текстовой сущности 'mention', получено '%s'",
-				chat.Messages[0].TextEntities[0].Type)
+		if len(participants) != 0 {
+			t.Errorf("Ожидался пустой срез участников, получено %d", len(participants))
 		}
 	})
 }

@@ -9,7 +9,6 @@ import (
 
 	"telegram-chat-parser/internal/adapters/parser"
 	"telegram-chat-parser/internal/adapters/source"
-	"telegram-chat-parser/internal/core/services"
 )
 
 // Этот интеграционный тест симулирует полный цикл работы приложения.
@@ -48,8 +47,6 @@ func TestFullApplicationFlow(t *testing.T) {
 	// 1. Инициализация компонентов
 	src := source.NewCliSource(testFile)
 	psr := parser.NewJsonParser()
-	extractionSvc := services.NewExtractionService()
-
 	// Для этого теста мы будем использовать мок-сервис API, чтобы избежать реальных вызовов API.
 	// Поскольку мы не можем контролировать реальный API в тестах, мы будем тестировать только до этапа извлечения,
 	// который не требует вызовов API.
@@ -60,14 +57,9 @@ func TestFullApplicationFlow(t *testing.T) {
 		t.Fatalf("Не удалось получить данные: %v", err)
 	}
 
-	chat, err := psr.Parse(data)
+	rawParticipants, err := psr.Parse(data)
 	if err != nil {
-		t.Fatalf("Не удалось разобрать данные: %v", err)
-	}
-
-	rawParticipants, err := extractionSvc.ExtractRawParticipants(chat)
-	if err != nil {
-		t.Fatalf("Не удалось извлечь сырых участников: %v", err)
+		t.Fatalf("Не удалось разобрать данные и извлечь участников: %v", err)
 	}
 
 	if len(rawParticipants) == 0 {

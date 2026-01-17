@@ -15,27 +15,24 @@ import (
 
 // ProcessChatUseCase инкапсулирует бизнес-логику для обработки файла экспорта чата.
 type ProcessChatUseCase struct {
-	cfg        *config.Config
-	parser     ports.Parser
-	extractor  ports.ExtractionService
-	enricher   ports.EnrichmentService
-	cacheStore *cache.CacheStore
+	cfg           *config.Config
+	parserFactory ports.ParserFactory
+	enricher      ports.EnrichmentService
+	cacheStore    *cache.CacheStore
 }
 
 // NewProcessChatUseCase создает новый экземпляр ProcessChatUseCase.
 func NewProcessChatUseCase(
 	cfg *config.Config,
-	parser ports.Parser,
-	extractor ports.ExtractionService,
+	parserFactory ports.ParserFactory,
 	enricher ports.EnrichmentService,
 	cacheStore *cache.CacheStore,
 ) *ProcessChatUseCase {
 	return &ProcessChatUseCase{
-		cfg:        cfg,
-		parser:     parser,
-		extractor:  extractor,
-		enricher:   enricher,
-		cacheStore: cacheStore,
+		cfg:           cfg,
+		parserFactory: parserFactory,
+		enricher:      enricher,
+		cacheStore:    cacheStore,
 	}
 }
 
@@ -85,17 +82,16 @@ func (uc *ProcessChatUseCase) ProcessChat(ctx context.Context, filePaths []strin
 			return nil, fmt.Errorf("failed to extract data from %s: %w", filePath, err)
 		}
 
-		chat, err := uc.parser.Parse(data)
+		parser, err := uc.parserFactory.GetParser(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get parser for %s: %w", filePath, err)
+		}
+
+		rawParticipants, err := parser.Parse(data)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse data from %s: %w", filePath, err)
 		}
-		slog.Info("Разобран чат", "path", filePath, "message_count", len(chat.Messages))
-
-		rawParticipants, err := uc.extractor.ExtractRawParticipants(chat)
-		if err != nil {
-			return nil, fmt.Errorf("failed to extract participants from %s: %w", filePath, err)
-		}
-		slog.Info("Извлечены участники", "path", filePath, "count", len(rawParticipants))
+		slog.Info("Разобран чат и извлечены участники", "path", filePath, "count", len(rawParticipants))
 
 		allRawParticipants = append(allRawParticipants, rawParticipants...)
 	}
@@ -158,17 +154,16 @@ func (uc *ProcessChatUseCase) ProcessChatFromData(ctx context.Context, fileDataL
 	for i, data := range fileDataList {
 		slog.Info("Обработка данных из файла", "index", i, "size", len(data))
 
-		chat, err := uc.parser.Parse(data)
+		parser, err := uc.parserFactory.GetParserForData(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get parser for data block %d: %w", i, err)
+		}
+
+		rawParticipants, err := parser.Parse(data)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse data from file %d: %w", i, err)
 		}
-		slog.Info("Разобран чат", "index", i, "message_count", len(chat.Messages))
-
-		rawParticipants, err := uc.extractor.ExtractRawParticipants(chat)
-		if err != nil {
-			return nil, fmt.Errorf("failed to extract participants from file %d: %w", i, err)
-		}
-		slog.Info("Извлечены участники", "index", i, "count", len(rawParticipants))
+		slog.Info("Разобран чат и извлечены участники", "index", i, "count", len(rawParticipants))
 
 		allRawParticipants = append(allRawParticipants, rawParticipants...)
 	}

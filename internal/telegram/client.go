@@ -241,15 +241,26 @@ func (c *Client) ContactsResolveUsername(ctx context.Context, req *tg.ContactsRe
 	var result *tg.ContactsResolvedPeer
 	c.log.DebugContext(ctx, "Executing API call: ContactsResolveUsername", "username", req.Username)
 	err := c.do(ctx, func(ctx context.Context) error {
-		res, err := c.tgRunner.API().ContactsResolveUsername(ctx, req)
-		if err == nil {
+		res, apiErr := c.tgRunner.API().ContactsResolveUsername(ctx, req)
+
+		// USERNAME_INVALID - это не ошибка, а ожидаемый результат "не найдено".
+		if apiErr != nil && strings.Contains(apiErr.Error(), "USERNAME_INVALID") {
+			c.log.DebugContext(ctx, "Username not found, this is an expected outcome", "username", req.Username)
+
+			return nil
+		}
+
+		if apiErr == nil {
 			result = res
 		}
-		return err
+		return apiErr
 	})
+
+	// Логируем только сетевые ошибки
 	if err != nil && !errors.Is(err, ErrFloodWaitActive) {
-		c.log.WarnContext(ctx, "API call ContactsResolveUsername failed", "username", req.Username, "error", err)
+		c.log.WarnContext(ctx, "API call ContactsResolveUsername failed with an unexpected error", "username", req.Username, "error", err)
 	}
+
 	return result, err
 }
 

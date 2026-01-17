@@ -15,5 +15,6 @@ coverage.out
 *.log
 *.pid
 *.json
+*.html
 
 /.idea

@@ -13,14 +13,8 @@ type DataSource interface {
 
 // Parser определяет интерфейс для парсинга данных чата.
 type Parser interface {
-	// Parse преобразует сырые данные в структурированную модель чата.
-	Parse(data []byte) (*domain.ExportedChat, error)
-}
-
-// ExtractionService определяет интерфейс для извлечения "сырых" данных
-// об участниках из структуры чата.
-type ExtractionService interface {
-	ExtractRawParticipants(chat *domain.ExportedChat) ([]domain.RawParticipant, error)
+	// Parse преобразует сырые данные в "сырой" список участников.
+	Parse(data []byte) ([]domain.RawParticipant, error)
 }
 
 // EnrichmentService определяет интерфейс для обогащения данных об участниках
@@ -33,4 +27,11 @@ type EnrichmentService interface {
 type Exporter interface {
 	// Export принимает финальный список пользователей и выводит их.
 	Export(users []domain.User) error
+}
+
+// ParserFactory определяет интерфейс для фабрики парсеров.
+// Это позволяет абстрагироваться от конкретной реализации фабрики при тестировании.
+type ParserFactory interface {
+	GetParser(fileName string) (Parser, error)
+	GetParserForData(data []byte) (Parser, error)
 }

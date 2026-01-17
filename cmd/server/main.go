@@ -76,14 +76,13 @@ func run() error {
 	// 4. Инициализация зависимостей
 	taskStore := server.NewTaskStore()
 	cacheStore := cache.NewCacheStore()
-	parserSvc := parser.NewJsonParser()
-	extractorSvc := services.NewExtractionService()
+	parserFactory := parser.NewFactory()
 	enricherSvc := services.NewEnrichmentService(tgRouter,
 		cfg.Enrichment.PoolSize,
 		cfg.Enrichment.ClientRetryPause,
 		cfg.Enrichment.OperationTimeout,
 	)
-	processor := usecase.NewProcessChatUseCase(cfg, parserSvc, extractorSvc, enricherSvc, cacheStore)
+	processor := usecase.NewProcessChatUseCase(cfg, parserFactory, enricherSvc, cacheStore)
 
 	// 5. Создание HTTP-сервера
 	srv, err := server.New(cfg, processor, taskStore, cacheStore)
